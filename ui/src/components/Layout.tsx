@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
+import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
@@ -377,6 +378,7 @@ export function Layout() {
             )}
           >
             <div className="flex flex-1 min-h-0 overflow-hidden">
+              <CompanyRail />
               <div className="w-60 shrink-0 overflow-hidden">
                 {isInstanceSettingsRoute ? (
                   <InstanceSidebar />
@@ -396,6 +398,7 @@ export function Layout() {
         ) : (
           <div className="flex h-full flex-col shrink-0">
             <div className="flex flex-1 min-h-0">
+              <CompanyRail />
               <ResizableSidebarPane open={sidebarOpen} resizable className="h-full shrink-0">
                 {isInstanceSettingsRoute ? (
                   <InstanceSidebar />

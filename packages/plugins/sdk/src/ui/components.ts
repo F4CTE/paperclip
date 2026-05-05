@@ -420,12 +420,6 @@ export interface ManagedRoutineMissingRef {
   resourceKey: string;
 }
 
-export interface ManagedRoutineDefaultDrift {
-  changedFields: string[];
-  defaultTitle?: string | null;
-  defaultDescription?: string | null;
-}
-
 export interface ManagedRoutinesListItem {
   key: string;
   title: string;
@@ -440,7 +434,6 @@ export interface ManagedRoutinesListItem {
   lastRunStatus?: string | null;
   managedByPluginDisplayName?: string | null;
   missingRefs?: ManagedRoutineMissingRef[];
-  defaultDrift?: ManagedRoutineDefaultDrift | null;
 }
 
 export interface ManagedRoutinesListProps {

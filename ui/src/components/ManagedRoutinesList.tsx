@@ -23,12 +23,6 @@ export type ManagedRoutineMissingRef = {
   resourceKey: string;
 };
 
-export type ManagedRoutineDefaultDrift = {
-  changedFields: string[];
-  defaultTitle?: string | null;
-  defaultDescription?: string | null;
-};
-
 export type ManagedRoutinesListItem = {
   key: string;
   title: string;
@@ -43,7 +37,6 @@ export type ManagedRoutinesListItem = {
   lastRunStatus?: string | null;
   managedByPluginDisplayName?: string | null;
   missingRefs?: ManagedRoutineMissingRef[];
-  defaultDrift?: ManagedRoutineDefaultDrift | null;
 };
 
 export type ManagedRoutinesListProps = {

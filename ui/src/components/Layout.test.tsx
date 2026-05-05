@@ -40,6 +40,10 @@ vi.mock("@/lib/router", () => ({
   },
 }));
 
+vi.mock("./CompanyRail", () => ({
+  CompanyRail: () => <div>Company rail</div>,
+}));
+
 vi.mock("./Sidebar", () => ({
   Sidebar: () => <div>Main company nav</div>,
 }));
@@ -256,7 +260,6 @@ describe("Layout", () => {
     expect(mockHealthApi.get).toHaveBeenCalled();
     expect(container.textContent).toContain("Breadcrumbs");
     expect(container.textContent).toContain("Outlet content");
-    expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Authenticated private");
     expect(container.textContent).not.toContain(
       "Sign-in is required and this instance is intended for private-network access.",
@@ -309,7 +312,6 @@ describe("Layout", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Company settings sidebar");
-    expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Instance sidebar");
     expect(container.textContent).not.toContain("Main company nav");
     expect(container.textContent).not.toContain("Plugin route sidebar");
@@ -337,7 +339,6 @@ describe("Layout", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Instance sidebar");
-    expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Company settings sidebar");
     expect(container.textContent).not.toContain("Main company nav");
     expect(container.textContent).not.toContain("Plugin route sidebar");

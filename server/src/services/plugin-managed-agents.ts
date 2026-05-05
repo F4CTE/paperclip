@@ -126,33 +126,6 @@ function applyInstructionTemplateVariables(
   return next;
 }
 
-function declaredInstructionFiles(
-  declaration: PluginManagedAgentDeclaration,
-  variables: Record<string, string | null | undefined>,
-) {
-  const instructionDeclaration = declaration.instructions;
-  if (!instructionDeclaration?.content && !instructionDeclaration?.files) return null;
-
-  const entryFile = instructionDeclaration.entryFile ?? "AGENTS.md";
-  const files = { ...(instructionDeclaration.files ?? {}) };
-  if (instructionDeclaration.content !== undefined) {
-    files[entryFile] = instructionDeclaration.content;
-  }
-  if (files[entryFile] === undefined) {
-    files[entryFile] = "";
-  }
-
-  return {
-    entryFile,
-    files: Object.fromEntries(
-      Object.entries(files).map(([filePath, content]) => [
-        filePath,
-        applyInstructionTemplateVariables(content, variables),
-      ]),
-    ),
-  };
-}
-
 function rowIsManagedAgent(
   row: typeof agents.$inferSelect,
   pluginKey: string,
@@ -326,18 +299,19 @@ export function pluginManagedAgentService(
     companyId: string,
     agent: Agent,
     declaration: PluginManagedAgentDeclaration,
-    materializeOptions: { replaceExisting: boolean },
+    options: { replaceExisting: boolean },
   ): Promise<Agent> {
-    const variables = await optionsForInstructionVariables(companyId);
-    const declared = declaredInstructionFiles(declaration, variables);
-    if (!declared) return agent;
+    const instructionDeclaration = declaration.instructions;
+    if (!instructionDeclaration?.content) return agent;
 
+    const entryFile = instructionDeclaration.entryFile ?? "AGENTS.md";
+    const variables = await optionsForInstructionVariables(companyId);
     const materialized = await instructions.materializeManagedBundle(
       agent,
-      declared.files,
+      { [entryFile]: applyInstructionTemplateVariables(instructionDeclaration.content, variables) },
       {
-        entryFile: declared.entryFile,
-        replaceExisting: materializeOptions.replaceExisting,
+        entryFile,
+        replaceExisting: options.replaceExisting,
         clearLegacyPromptTemplate: true,
       },
     );
@@ -351,33 +325,6 @@ export function pluginManagedAgentService(
     return (updated as Agent | null) ?? { ...agent, adapterConfig: materialized.adapterConfig };
   }
 
-  async function managedInstructionDefaultDrift(
-    companyId: string,
-    agent: Agent | null,
-    declaration: PluginManagedAgentDeclaration,
-  ): Promise<PluginManagedAgentResolution["defaultDrift"]> {
-    if (!agent) return null;
-    const variables = await optionsForInstructionVariables(companyId);
-    const declared = declaredInstructionFiles(declaration, variables);
-    if (!declared) return null;
-
-    let exported: Awaited<ReturnType<typeof instructions.exportFiles>>;
-    try {
-      exported = await instructions.exportFiles(agent);
-    } catch {
-      return { entryFile: declared.entryFile, changedFiles: [declared.entryFile] };
-    }
-
-    const paths = new Set([...Object.keys(declared.files), ...Object.keys(exported.files)]);
-    const changedFiles = [...paths]
-      .filter((filePath) => (exported.files[filePath] ?? null) !== (declared.files[filePath] ?? null))
-      .sort((left, right) => left.localeCompare(right));
-    if (exported.entryFile !== declared.entryFile && !changedFiles.includes(declared.entryFile)) {
-      changedFiles.unshift(declared.entryFile);
-    }
-    return changedFiles.length > 0 ? { entryFile: declared.entryFile, changedFiles } : null;
-  }
-
   async function optionsForInstructionVariables(companyId: string) {
     return options.instructionTemplateVariables ? options.instructionTemplateVariables(companyId) : {};
   }
@@ -386,13 +333,13 @@ export function pluginManagedAgentService(
     return options.pluginKey;
   }
 
-  async function resolution(
+  function resolution(
     companyId: string,
     declaration: PluginManagedAgentDeclaration,
     agent: Agent | null,
     status: PluginManagedAgentResolution["status"],
     approvalId?: string | null,
-  ): Promise<PluginManagedAgentResolution> {
+  ): PluginManagedAgentResolution {
     return {
       pluginKey: options.pluginKey,
       resourceKind: "agent",
@@ -402,7 +349,6 @@ export function pluginManagedAgentService(
       agent,
       status,
       approvalId: approvalId ?? null,
-      defaultDrift: await managedInstructionDefaultDrift(companyId, agent, declaration),
     };
   }
 

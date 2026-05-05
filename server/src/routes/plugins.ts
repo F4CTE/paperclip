@@ -73,10 +73,6 @@ import {
   requireLocalFolderDeclaration,
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
-import {
-  extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
-} from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -199,9 +195,9 @@ function listBundledPluginExamples(): AvailablePluginExample[] {
  *
  * Lookup order:
  * - UUID-like IDs: getById first, then getByKey.
- * - All non-UUID values: getByKey only, never getById. The persisted plugin
- *   ID column is a PostgreSQL UUID, so probing it with keys such as
- *   "acme.plugin" raises a database cast error before a key lookup can happen.
+ * - Scoped package keys (e.g. "@scope/name"): getByKey only, never getById.
+ * - Other non-UUID IDs: try getById first (test/memory registries may allow this),
+ *   then fallback to getByKey. Any UUID parse error from getById is ignored.
  *
  * @param registry - The plugin registry service instance
  * @param pluginId - Either a database UUID or plugin key (manifest id)
@@ -212,13 +208,27 @@ async function resolvePlugin(
   pluginId: string,
 ) {
   const isUuid = UUID_REGEX.test(pluginId);
+  const isScopedPackageKey = pluginId.startsWith("@") || pluginId.includes("/");
 
-  if (!isUuid) {
+  // Scoped package IDs are valid plugin keys but invalid UUIDs.
+  // Skip getById() entirely to avoid Postgres uuid parse errors.
+  if (isScopedPackageKey && !isUuid) {
     return registry.getByKey(pluginId);
   }
 
-  const byId = await registry.getById(pluginId);
-  if (byId) return byId;
+  try {
+    const byId = await registry.getById(pluginId);
+    if (byId) return byId;
+  } catch (error) {
+    const maybeCode =
+      typeof error === "object" && error !== null && "code" in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+    // Ignore invalid UUID cast errors and continue with key lookup.
+    if (maybeCode !== "22P02") {
+      throw error;
+    }
+  }
 
   return registry.getByKey(pluginId);
 }
@@ -1931,12 +1941,6 @@ export function pluginRoutes(
     }
 
     try {
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
-        return;
-      }
-
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
       });

@@ -34,7 +34,6 @@
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -176,21 +175,6 @@ interface EventRegistration {
 /** Default timeout for worker→host RPC calls. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-function realpathOrResolvedPath(filePath: string): string {
-  const resolvedPath = path.resolve(filePath);
-  try {
-    return fs.realpathSync.native(resolvedPath);
-  } catch {
-    return resolvedPath;
-  }
-}
-
-export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
-  const thisFile = realpathOrResolvedPath(fileURLToPath(moduleUrl));
-  const entryPath = realpathOrResolvedPath(entry);
-  return thisFile === entryPath;
-}
-
 // ---------------------------------------------------------------------------
 // startWorkerRpcHost
 // ---------------------------------------------------------------------------
@@ -239,7 +223,9 @@ export function runWorker(
   }
   const entry = process.argv[1];
   if (typeof entry !== "string") return;
-  if (isWorkerEntrypoint(entry, moduleUrl)) {
+  const thisFile = path.resolve(fileURLToPath(moduleUrl));
+  const entryPath = path.resolve(entry);
+  if (thisFile === entryPath) {
     startWorkerRpcHost({ plugin });
   }
 }
@@ -443,10 +429,6 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             relativePath,
             contents,
           });
-        },
-
-        async deleteFile(companyId: string, folderKey: string, relativePath: string) {
-          return callHost("localFolders.deleteFile", { companyId, folderKey, relativePath });
         },
       },
 
@@ -689,20 +671,6 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
-      skills: {
-        managed: {
-          async get(skillKey: string, companyId: string) {
-            return callHost("skills.managed.get", { skillKey, companyId });
-          },
-          async reconcile(skillKey: string, companyId: string) {
-            return callHost("skills.managed.reconcile", { skillKey, companyId });
-          },
-          async reset(skillKey: string, companyId: string) {
-            return callHost("skills.managed.reset", { skillKey, companyId });
-          },
-        },
-      },
-
       companies: {
         async list(input) {
           return callHost("companies.list", {
@@ -751,7 +719,6 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             assigneeUserId: input.assigneeUserId,
             requestDepth: input.requestDepth,
             billingCode: input.billingCode,
-            assigneeAdapterOverrides: input.assigneeAdapterOverrides,
             surfaceVisibility: input.surfaceVisibility,
             originKind: input.originKind,
             originId: input.originId,
