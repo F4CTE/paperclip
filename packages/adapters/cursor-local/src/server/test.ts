@@ -172,6 +172,15 @@ export async function testEnvironment(
   command = finalSandboxCommand.command;
   env = finalSandboxCommand.env;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId,
+    target,
+    adapterKey: "cursor",
+    installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+    env,
+  });
+  if (installCheck) checks.push(installCheck);
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
