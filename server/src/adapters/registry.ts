@@ -4,10 +4,7 @@ import type {
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
 } from "./types.js";
-import {
-  buildSandboxNpmInstallCommand,
-  getAdapterSessionManagement,
-} from "@paperclipai/adapter-utils";
+import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as acpxExecute,
   testEnvironment as acpxTestEnvironment,
@@ -60,13 +57,6 @@ import {
   modelProfiles as cursorModelProfiles,
 } from "@paperclipai/adapter-cursor-local";
 import {
-  execute as cursorCloudExecute,
-  getConfigSchema as getCursorCloudConfigSchema,
-  sessionCodec as cursorCloudSessionCodec,
-  testEnvironment as cursorCloudTestEnvironment,
-} from "@paperclipai/adapter-cursor-cloud/server";
-import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
-import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -78,17 +68,6 @@ import {
   models as geminiModels,
   modelProfiles as geminiModelProfiles,
 } from "@paperclipai/adapter-gemini-local";
-import {
-  execute as grokExecute,
-  listGrokSkills,
-  syncGrokSkills,
-  testEnvironment as grokTestEnvironment,
-  sessionCodec as grokSessionCodec,
-} from "@paperclipai/adapter-grok-local/server";
-import {
-  agentConfigurationDoc as grokAgentConfigurationDoc,
-  models as grokModels,
-} from "@paperclipai/adapter-grok-local";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -162,12 +141,11 @@ function buildNpmRuntimeCommandSpec(
 ): AdapterRuntimeCommandSpec {
   const command = readConfiguredCommand(config, fallbackCommand);
   const canSelfInstall = !hasPathSeparator(command) && command === fallbackCommand;
-  const installLine = buildSandboxNpmInstallCommand(packageName);
   return {
     command,
     detectCommand: command,
     installCommand: canSelfInstall
-      ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then ${installLine}; fi`
+      ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then npm install -g ${shellQuote(packageName)}; fi`
       : null,
   };
 }
@@ -326,21 +304,6 @@ const cursorLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: cursorAgentConfigurationDoc,
 };
 
-const cursorCloudAdapter: ServerAdapterModule = {
-  type: "cursor_cloud",
-  execute: cursorCloudExecute,
-  testEnvironment: cursorCloudTestEnvironment,
-  sessionCodec: cursorCloudSessionCodec,
-  sessionManagement: getAdapterSessionManagement("cursor_cloud") ?? undefined,
-  models: [],
-  supportsLocalAgentJwt: false,
-  supportsInstructionsBundle: true,
-  instructionsPathKey: "instructionsFilePath",
-  requiresMaterializedRuntimeSkills: false,
-  agentConfigurationDoc: cursorCloudAgentConfigurationDoc,
-  getConfigSchema: getCursorCloudConfigSchema,
-};
-
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
   execute: geminiExecute,
@@ -358,27 +321,6 @@ const geminiLocalAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) =>
     buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli"),
   agentConfigurationDoc: geminiAgentConfigurationDoc,
-};
-
-const grokLocalAdapter: ServerAdapterModule = {
-  type: "grok_local",
-  execute: grokExecute,
-  testEnvironment: grokTestEnvironment,
-  listSkills: listGrokSkills,
-  syncSkills: syncGrokSkills,
-  sessionCodec: grokSessionCodec,
-  sessionManagement: getAdapterSessionManagement("grok_local") ?? undefined,
-  models: grokModels,
-  supportsLocalAgentJwt: true,
-  supportsInstructionsBundle: true,
-  instructionsPathKey: "instructionsFilePath",
-  requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config) => ({
-    command: readConfiguredCommand(config, "grok"),
-    detectCommand: readConfiguredCommand(config, "grok"),
-    installCommand: null,
-  }),
-  agentConfigurationDoc: grokAgentConfigurationDoc,
 };
 
 const openclawGatewayAdapter: ServerAdapterModule = {
@@ -515,10 +457,8 @@ function registerBuiltInAdapters() {
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
-    cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
-    grokLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,
