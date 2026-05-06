@@ -145,6 +145,10 @@ export const queryKeys = {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>
       ["company-search", companyId, q, scope, limit, offset] as const,
   },
+  companySearch: {
+    search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>
+      ["company-search", companyId, q, scope, limit, offset] as const,
+  },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,
