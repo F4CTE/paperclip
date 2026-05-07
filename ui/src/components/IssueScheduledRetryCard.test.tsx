@@ -63,24 +63,13 @@ function buildRetryResponse(outcome: IssueRetryNowOutcome) {
   };
 }
 
-async function waitForUi(assertion: () => void) {
-  await vi.waitFor(async () => {
+async function flushAll() {
+  for (let i = 0; i < 4; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
     await act(async () => {
       await Promise.resolve();
     });
-    assertion();
-  });
-}
-
-async function waitForRetryButtonText(expected: string) {
-  for (let i = 0; i < 20; i += 1) {
-    if ((getRetryNowButton()?.textContent ?? "").includes(expected)) return;
-    // eslint-disable-next-line no-await-in-loop
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
   }
-  expect(getRetryNowButton()!.textContent ?? "").toContain(expected);
 }
 
 function renderWithProviders(ui: ReactNode) {
@@ -185,7 +174,7 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       button!.click();
     });
-    await waitForRetryButtonText("Promoted");
+    await flushAll();
     expect(retryNowMock).toHaveBeenCalledWith("issue-1");
     const finalButton = getRetryNowButton();
     expect(finalButton!.textContent ?? "").toContain("Promoted");
@@ -200,7 +189,7 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       getRetryNowButton()!.click();
     });
-    await waitForRetryButtonText("Already promoted");
+    await flushAll();
     expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
     expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
   });
@@ -213,12 +202,11 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       getRetryNowButton()!.click();
     });
-    await waitForUi(() => {
-      const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
-      expect(band).not.toBeNull();
-      expect((band?.textContent ?? "")).toContain("Server error");
-      expect(getRetryNowButton()!.disabled).toBe(false);
-    });
+    await flushAll();
+    const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
+    expect(band).not.toBeNull();
+    expect((band?.textContent ?? "")).toContain("Server error");
+    expect(getRetryNowButton()!.disabled).toBe(false);
   });
 
   it("surfaces gate-suppressed outcome via the inline error band", async () => {
@@ -229,11 +217,10 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       getRetryNowButton()!.click();
     });
-    await waitForUi(() => {
-      const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
-      expect(band).not.toBeNull();
-      expect((band?.textContent ?? "")).toContain("Promotion suppressed");
-      expect(getRetryNowButton()!.disabled).toBe(false);
-    });
+    await flushAll();
+    const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
+    expect(band).not.toBeNull();
+    expect((band?.textContent ?? "")).toContain("Promotion suppressed");
+    expect(getRetryNowButton()!.disabled).toBe(false);
   });
 });
