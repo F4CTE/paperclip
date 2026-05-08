@@ -6750,7 +6750,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
       context.paperclipSessionRotationReason = sessionCompaction.reason;
       context.paperclipPreviousSessionId = previousSessionDisplayId ?? runtimeSessionIdForAdapter;
-      if (sessionCompaction.reason?.includes("hard reset threshold")) {
+      if (
+        latestRawUsage != null &&
+        latestRawUsage.inputTokens > HARD_SESSION_RAW_INPUT_TOKEN_LIMIT
+      ) {
         logger.warn(
           {
             companyId: agent.companyId,
