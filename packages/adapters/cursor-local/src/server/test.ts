@@ -4,7 +4,6 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
-  asNumber,
   asString,
   asStringArray,
   parseObject,
@@ -99,7 +98,6 @@ export async function testEnvironment(
   let command = asString(config.command, "agent");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -172,15 +170,6 @@ export async function testEnvironment(
   command = finalSandboxCommand.command;
   env = finalSandboxCommand.env;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  const installCheck = await maybeRunSandboxInstallCommand({
-    runId,
-    target,
-    adapterKey: "cursor",
-    installCommand: SANDBOX_INSTALL_COMMAND,
-    detectCommand: command,
-    env,
-  });
-  if (installCheck) checks.push(installCheck);
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
@@ -241,12 +230,6 @@ export async function testEnvironment(
         hint: "Use `agent` or `cursor-agent` to run the automatic installation and auth probe.",
       });
     } else {
-      // Cursor's `agent` binary still pays cold-start overhead in container
-      // sandboxes, but standard-2 probes no longer need a 120s version budget.
-      const versionProbeTimeoutSec = Math.max(
-        1,
-        asNumber(config.versionProbeTimeoutSec, targetIsSandbox ? 60 : 45),
-      );
       const versionProbe = await runAdapterExecutionTargetProcess(
         runId,
         target,
@@ -255,7 +238,7 @@ export async function testEnvironment(
         {
           cwd,
           env,
-          timeoutSec: versionProbeTimeoutSec,
+          timeoutSec: 45,
           graceSec: 5,
           onLog: async () => {},
         },
@@ -312,12 +295,6 @@ export async function testEnvironment(
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("Respond with hello.");
 
-      // Sandbox bridges still add cursor CLI cold-start overhead, but the
-      // standard-2 tier now completes probes fast enough that 90s is ample.
-      const helloProbeTimeoutSec = Math.max(
-        1,
-        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
-      );
       const probe = await runAdapterExecutionTargetProcess(
         runId,
         target,
@@ -326,7 +303,7 @@ export async function testEnvironment(
         {
           cwd,
           env,
-          timeoutSec: helloProbeTimeoutSec,
+          timeoutSec: 45,
           graceSec: 5,
           onLog: async () => {},
         },
