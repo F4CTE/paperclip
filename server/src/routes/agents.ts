@@ -1745,7 +1745,7 @@ export function agentRoutes(
     const recoveryActionsSvc = issueRecoveryActionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       assigneeAgentId: req.actor.agentId,
-      status: "todo,in_progress,in_review,blocked",
+      status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
@@ -1755,19 +1755,8 @@ export function agentRoutes(
       recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
     ]);
 
-    const filtered = rows.map((issue) => {
-      const readiness = dependencyReadiness.get(issue.id);
-      const isDependencyReady = readiness?.isDependencyReady ?? true;
-      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      const unresolvedBlockerIssueIds = readiness?.unresolvedBlockerIssueIds ?? [];
-
-      // Exclude todo items with unresolved blockers — they are not checkoutable.
-      // in_progress/in_review items are already checked out and may have blockers.
-      if (issue.status === "todo" && unresolvedBlockerCount > 0) {
-        return null;
-      }
-
-      return {
+    res.json(
+      rows.map((issue) => ({
         id: issue.id,
         identifier: issue.identifier,
         title: issue.title,
@@ -1779,13 +1768,11 @@ export function agentRoutes(
         updatedAt: issue.updatedAt,
         activeRun: issue.activeRun,
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-        dependencyReady: isDependencyReady,
-        unresolvedBlockerCount,
-        unresolvedBlockerIssueIds,
-      };
-    }).filter((item): item is NonNullable<typeof item> => item !== null);
-
-    res.json(filtered);
+        dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
+        unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
+        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
+      })),
+    );
   });
 
   router.get("/agents/me/inbox/mine", async (req, res) => {
