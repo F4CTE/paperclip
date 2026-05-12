@@ -2338,6 +2338,58 @@ describe("realizeExecutionWorkspace", () => {
     expect(realized.warnings.some((w) => w.includes("PR review worktree HEAD"))).toBe(true);
     expect(realized.warnings.some((w) => w.includes(nonexistentSha))).toBe(true);
   });
+
+  it("warns when a reused worktree has a HEAD that differs from the PR head SHA", async () => {
+    const repoRoot = await createTempRepo();
+
+    await runGit(repoRoot, ["checkout", "-b", "pr-feature"]);
+    await fs.writeFile(path.join(repoRoot, "pr-file.txt"), "PR content\n", "utf8");
+    await runGit(repoRoot, ["add", "pr-file.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "PR commit"]);
+    const fullHeadSha = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot })).stdout.trim();
+    const shortHeadSha = fullHeadSha.slice(0, 12);
+
+    await runGit(repoRoot, ["checkout", "main"]);
+
+    const branchName = `PAP-995-${shortHeadSha}`;
+    const worktreeParentDir = path.join(repoRoot, ".paperclip", "worktrees");
+    await fs.mkdir(worktreeParentDir, { recursive: true });
+    const worktreePath = path.join(worktreeParentDir, branchName);
+    await runGit(repoRoot, ["worktree", "add", "-b", branchName, worktreePath, "main"]);
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-pr-review-reuse",
+        identifier: "PAP-995",
+        title: `@${shortHeadSha}`,
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.strategy).toBe("git_worktree");
+    expect(realized.created).toBe(false);
+    expect(realized.warnings.length).toBeGreaterThanOrEqual(1);
+    expect(realized.warnings.some((w) => w.includes("PR review worktree HEAD"))).toBe(true);
+    expect(realized.warnings.some((w) => w.includes(fullHeadSha))).toBe(true);
+  });
 });
 
 describe("ensureRuntimeServicesForRun", () => {

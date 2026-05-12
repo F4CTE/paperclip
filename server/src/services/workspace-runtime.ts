@@ -1102,13 +1102,24 @@ export async function realizeExecutionWorkspace(input: {
       created: false,
       recorder: input.recorder ?? null,
     });
+    if (prHeadSha) {
+      const worktreeHead = await runGit(
+        ["rev-parse", "HEAD"],
+        reusablePath,
+      ).catch(() => null);
+      if (worktreeHead !== prHeadSha) {
+        warnings.push(
+          `PR review worktree HEAD is ${worktreeHead ?? "unknown"} instead of the reviewed PR head ${prHeadSha}. The worktree was created from the default branch rather than the PR head commit. Use GitHub diff/API to review the PR changes.`,
+        );
+      }
+    }
     return {
       ...input.base,
       strategy: "git_worktree" as const,
       cwd: reusablePath,
       branchName,
       worktreePath: reusablePath,
-      warnings: [],
+      warnings: [...warnings],
       created: false,
     };
   }
