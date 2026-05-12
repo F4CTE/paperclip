@@ -48,10 +48,6 @@ export type WikiEventIngestionSettings = {
   maxCharacters: number;
 };
 
-export type WikiEventIngestionSettingsUpdate = Omit<Partial<WikiEventIngestionSettings>, "sources"> & {
-  sources?: Partial<Record<WikiEventIngestionSource, boolean>>;
-};
-
 export type PaperclipIngestionSourceScope =
   | { kind: "active_projects"; limit: number; statuses?: Array<"in_progress" | "todo" | "done"> }
   | { kind: "selected_projects"; projectIds: string[] }
@@ -1104,7 +1100,7 @@ export async function listPaperclipIngestionCandidates(ctx: PluginContext, input
 
 export async function updateEventIngestionSettings(
   ctx: PluginContext,
-  input: { companyId: string; settings: WikiEventIngestionSettingsUpdate },
+  input: { companyId: string; settings: Partial<WikiEventIngestionSettings> & { sources?: Partial<Record<WikiEventIngestionSource, boolean>> } },
 ): Promise<WikiEventIngestionSettings> {
   await requirePaperclipIngestionPolicy(ctx, {
     companyId: input.companyId,
