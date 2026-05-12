@@ -396,6 +396,33 @@ function sanitizeBranchName(value: string): string {
     .slice(0, 120) || "paperclip-work";
 }
 
+function isOpaquePullRequestBranchName(value: string): boolean {
+  return /^(?:(?:tmp-)?pr[-/]?[0-9]+(?:[-/][A-Za-z0-9._-]+)?|pull[-/]?[0-9]+(?:[-/][A-Za-z0-9._-]+)?)$/i.test(value.trim());
+}
+
+const PR_HEAD_SHA_TITLE_RE = /@([0-9a-f]{4,40})\b/;
+
+function extractPrHeadShaFromTitle(title: string | null | undefined): string | null {
+  if (!title) return null;
+  const match = title.match(PR_HEAD_SHA_TITLE_RE);
+  return match ? match[1] : null;
+}
+
+async function resolveFullSha(repoRoot: string, sha: string): Promise<string | null> {
+  return runGit(["rev-parse", "--verify", `${sha}^{commit}`], repoRoot)
+    .then((output) => output.trim())
+    .catch(() => null);
+}
+
+function normalizeWorkspaceBranchName(renderedBranch: string, issue: ExecutionWorkspaceIssueRef | null): string {
+  const branchName = sanitizeBranchName(renderedBranch);
+  if (!isOpaquePullRequestBranchName(branchName) || !issue) return branchName;
+
+  const issueIdentifier = issue.identifier || issue.id || "issue";
+  const slug = sanitizeSlugPart(issue.title, sanitizeSlugPart(issueIdentifier, "issue"));
+  return sanitizeBranchName(`${issueIdentifier}-${slug}`);
+}
+
 function isAbsolutePath(value: string) {
   return path.isAbsolute(value) || value.startsWith("~");
 }
@@ -579,8 +606,21 @@ async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: s
   return null;
 }
 
+async function gitLocalBranchExists(repoRoot: string, branchName: string): Promise<boolean> {
+  return Boolean(
+    await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], repoRoot)
+      .then(() => true)
+      .catch(() => false),
+  );
+}
+
 async function isGitCheckout(cwd: string): Promise<boolean> {
   return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
+}
+
+async function gitWorktreeHasChanges(worktreePath: string): Promise<boolean> {
+  const status = await runGit(["status", "--porcelain"], worktreePath);
+  return status.trim().length > 0;
 }
 
 async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
@@ -1006,7 +1046,7 @@ export async function realizeExecutionWorkspace(input: {
     projectId: input.base.projectId,
     repoRef: input.base.repoRef,
   });
-  const branchName = sanitizeBranchName(renderedBranch);
+  const branchName = normalizeWorkspaceBranchName(renderedBranch, input.issue);
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
@@ -1015,11 +1055,21 @@ export async function realizeExecutionWorkspace(input: {
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
+  const prHeadShaShort = extractPrHeadShaFromTitle(input.issue?.title);
+  const prHeadSha = prHeadShaShort
+    ? (await resolveFullSha(repoRoot, prHeadShaShort)) ?? prHeadShaShort
+    : null;
+  const prHeadShaAvailable = prHeadSha
+    ? await runGit(["cat-file", "-t", prHeadSha], repoRoot).then(() => true).catch(() => false)
+    : false;
   const baseRef = configuredBaseRef
+    ?? (prHeadShaAvailable ? prHeadSha : null)
     ?? await detectDefaultBranch(repoRoot)
     ?? "HEAD";
+  const warnings: string[] = [];
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
+  await runGit(["worktree", "prune"], repoRoot).catch(() => {});
 
   async function reuseExistingWorktree(reusablePath: string) {
     if (input.recorder) {
@@ -1071,14 +1121,53 @@ export async function realizeExecutionWorkspace(input: {
     }).catch(() => null);
   }
 
+  async function removeCleanDriftedWorktree(validationReason: string): Promise<boolean> {
+    if (!validationReason.startsWith("worktree HEAD is on ")) return false;
+    if (await gitWorktreeHasChanges(worktreePath)) return false;
+
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_prepare",
+      args: ["worktree", "remove", worktreePath],
+      cwd: repoRoot,
+      metadata: {
+        repoRoot,
+        worktreePath,
+        branchName,
+        baseRef,
+        repairedBranchDrift: true,
+        reason: validationReason,
+      },
+      successMessage: `Removed clean drifted git worktree at ${worktreePath}\n`,
+      failureLabel: `git worktree remove ${worktreePath}`,
+    });
+    warnings.push(
+      `Removed clean drifted worktree path "${worktreePath}" before recreating expected branch "${branchName}".`,
+    );
+    return true;
+  }
+
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
     const validation = await validateReusableWorktree(worktreePath);
     if (validation?.valid) {
       return await reuseExistingWorktree(worktreePath);
     }
-    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+    if (validation && !validation.valid && validation.reason.includes("not registered")) {
+      const quarantinePath = `${worktreePath}.orphaned-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      await fs.rename(worktreePath, quarantinePath);
+      warnings.push(
+        `Moved stale unregistered worktree path "${worktreePath}" to "${quarantinePath}" before recreating it.`,
+      );
+    } else if (
+      validation
+      && !validation.valid
+      && await removeCleanDriftedWorktree(validation.reason)
+    ) {
+      // The expected path is now free and will be recreated below.
+    } else {
+      const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+      throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+    }
   }
 
   const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
@@ -1091,25 +1180,7 @@ export async function realizeExecutionWorkspace(input: {
     throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
   }
 
-  try {
-    await recordGitOperation(input.recorder, {
-      phase: "worktree_prepare",
-      args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
-      cwd: repoRoot,
-      metadata: {
-        repoRoot,
-        worktreePath,
-        branchName,
-        baseRef,
-        created: true,
-      },
-      successMessage: `Created git worktree at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
-    });
-  } catch (error) {
-    if (!gitErrorIncludes(error, "already exists")) {
-      throw error;
-    }
+  async function attachExistingBranchWorktree() {
     try {
       await recordGitOperation(input.recorder, {
         phase: "worktree_prepare",
@@ -1127,9 +1198,6 @@ export async function realizeExecutionWorkspace(input: {
         failureLabel: `git worktree add ${worktreePath}`,
       });
     } catch (attachError) {
-      if (!gitErrorIncludes(attachError, "already checked out")) {
-        throw attachError;
-      }
       const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
       if (!reusablePath || !await isGitCheckout(reusablePath)) {
         throw attachError;
@@ -1137,6 +1205,44 @@ export async function realizeExecutionWorkspace(input: {
       return await reuseExistingWorktree(reusablePath);
     }
   }
+
+  if (await gitLocalBranchExists(repoRoot, branchName)) {
+    await attachExistingBranchWorktree();
+  } else {
+    try {
+      await recordGitOperation(input.recorder, {
+        phase: "worktree_prepare",
+        args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
+        cwd: repoRoot,
+        metadata: {
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef,
+          created: true,
+        },
+        successMessage: `Created git worktree at ${worktreePath}\n`,
+        failureLabel: `git worktree add ${worktreePath}`,
+      });
+    } catch (error) {
+      if (!gitErrorIncludes(error, "already exists")) {
+        throw error;
+      }
+      await attachExistingBranchWorktree();
+    }
+  }
+  if (prHeadSha) {
+    const worktreeHead = await runGit(
+      ["rev-parse", "HEAD"],
+      worktreePath,
+    ).catch(() => null);
+    if (worktreeHead !== prHeadSha) {
+      warnings.push(
+        `PR review worktree HEAD is ${worktreeHead ?? "unknown"} instead of the reviewed PR head ${prHeadSha}. The worktree was created from the default branch rather than the PR head commit. Use GitHub diff/API to review the PR changes.`,
+      );
+    }
+  }
+
   await provisionExecutionWorktree({
     strategy: rawStrategy,
     base: input.base,
@@ -1155,7 +1261,7 @@ export async function realizeExecutionWorkspace(input: {
     cwd: worktreePath,
     branchName,
     worktreePath,
-    warnings: [],
+    warnings,
     created: true,
   };
 }

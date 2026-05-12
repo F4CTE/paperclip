@@ -372,40 +372,45 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.branchName).toBe(first.branchName);
   });
 
-  it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
+  it("quarantines a stale unregistered worktree path before recreating it", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-447-add-worktree-support";
-    const poisonedPath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
-    await fs.mkdir(poisonedPath, { recursive: true });
+    const stalePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(stalePath, { recursive: true });
 
-    await expect(
-      realizeExecutionWorkspace({
-        base: {
-          baseCwd: repoRoot,
-          source: "project_primary",
-          projectId: "project-1",
-          workspaceId: "workspace-1",
-          repoUrl: null,
-          repoRef: "HEAD",
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
         },
-        config: {
-          workspaceStrategy: {
-            type: "git_worktree",
-            branchTemplate: "{{issue.identifier}}-{{slug}}",
-          },
-        },
-        issue: {
-          id: "issue-1",
-          identifier: "PAP-447",
-          title: "Add Worktree Support",
-        },
-        agent: {
-          id: "agent-1",
-          name: "Codex Coder",
-          companyId: "company-1",
-        },
-      }),
-    ).rejects.toThrow(/not a reusable git worktree \(path is not registered in `git worktree list`\)\./);
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.created).toBe(true);
+    expect(realized.worktreePath).toBe(stalePath);
+    expect(realized.warnings[0]).toContain("Moved stale unregistered worktree path");
+    const parentEntries = await fs.readdir(path.dirname(stalePath));
+    expect(parentEntries.some((entry) => entry.startsWith(`${branchName}.orphaned-`))).toBe(true);
+    await expect(fs.stat(path.join(stalePath, ".git"))).resolves.toBeTruthy();
   });
 
   it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
@@ -449,8 +454,9 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.realpath(realized.worktreePath ?? "")).resolves.toBe(expectedWorktreePath);
   });
 
-  it("rejects reusing a linked worktree whose branch drifted from the expected issue branch", async () => {
+  it("recreates a clean linked worktree whose branch drifted from the expected issue branch", async () => {
     const repoRoot = await createTempRepo();
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
     const initial = await realizeExecutionWorkspace({
       base: {
@@ -481,6 +487,74 @@ describe("realizeExecutionWorkspace", () => {
 
     await runGit(initial.cwd, ["checkout", "-b", "unexpected-branch"]);
 
+    const repaired = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(repaired.cwd).toBe(initial.cwd);
+    expect(repaired.warnings[0]).toContain("Removed clean drifted worktree path");
+    await expect(execFileAsync("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: repaired.cwd }))
+      .resolves.toMatchObject({ stdout: "PAP-447-add-worktree-support\n" });
+    expect(operations.map((operation) => operation.command)).toContain(`git worktree remove ${initial.cwd}`);
+  });
+
+  it("rejects a linked worktree whose branch drifted with local changes", async () => {
+    const repoRoot = await createTempRepo();
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-448",
+        title: "Preserve Dirty Worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await runGit(initial.cwd, ["checkout", "-b", "unexpected-branch"]);
+    await fs.writeFile(path.join(initial.cwd, "dirty.txt"), "do not remove\n", "utf8");
+
     await expect(
       realizeExecutionWorkspace({
         base: {
@@ -499,8 +573,8 @@ describe("realizeExecutionWorkspace", () => {
         },
         issue: {
           id: "issue-1",
-          identifier: "PAP-447",
-          title: "Add Worktree Support",
+          identifier: "PAP-448",
+          title: "Preserve Dirty Worktree",
         },
         agent: {
           id: "agent-1",
@@ -508,7 +582,7 @@ describe("realizeExecutionWorkspace", () => {
           companyId: "company-1",
         },
       }),
-    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-447-add-worktree-support"\)\./);
+    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-448-preserve-dirty-worktree"\)\./);
   });
 
   it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {
@@ -633,6 +707,78 @@ describe("realizeExecutionWorkspace", () => {
     expect(realized.branchName).toBe("release/PAP-992.hotfix-april-1");
     expect(path.basename(realized.cwd)).toBe("PAP-992.hotfix-april-1");
   });
+
+  it("replaces opaque PR-number workspace branch names with recognizable issue names", async () => {
+    const repoRoot = await createTempRepo();
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "pr/432",
+        },
+      },
+      issue: {
+        id: "issue-opaque-pr",
+        identifier: "PAP-992",
+        title: "fix requested changes for opaque branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.branchName).toBe("PAP-992-fix-requested-changes-for-opaque-branch");
+    expect(realized.branchName?.startsWith("pr/")).toBe(false);
+    expect(path.basename(realized.cwd)).toBe(realized.branchName);
+  });
+
+  it.each(["pr1361", "pr-1361-fix", "pr/1361/rebase", "pull-1361-head"])(
+    "replaces opaque PR-number workspace branch variant %s with a recognizable issue name",
+    async (branchTemplate) => {
+      const repoRoot = await createTempRepo();
+
+      const realized = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate,
+          },
+        },
+        issue: {
+          id: "issue-opaque-pr",
+          identifier: "PAP-1361",
+          title: "fix requested changes for opaque branch",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+
+      expect(realized.branchName).toBe("PAP-1361-fix-requested-changes-for-opaque-branch");
+      expect(path.basename(realized.cwd)).toBe(realized.branchName);
+    },
+  );
 
   it("runs a configured provision command inside the derived worktree", async () => {
     const repoRoot = await createTempRepo();
@@ -819,6 +965,10 @@ describe("realizeExecutionWorkspace", () => {
     const sharedConfigDir = path.join(paperclipHome, "instances", instanceId);
     const sharedConfigPath = path.join(sharedConfigDir, "config.json");
     const sharedEnvPath = path.join(sharedConfigDir, ".env");
+    const sharedSecretsKeyPath = path.join(sharedConfigDir, "master.key");
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-config-bin-"));
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const originalPath = process.env.PATH;
 
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = instanceId;
@@ -886,7 +1036,21 @@ describe("realizeExecutionWorkspace", () => {
       ) + "\n",
       "utf8",
     );
+    await fs.writeFile(sharedSecretsKeyPath, "source-master-key\n", { mode: 0o600 });
     await fs.writeFile(sharedEnvPath, 'DATABASE_URL="postgres://worktree:test@db.example.com:6543/paperclip"\n', "utf8");
+    await fs.writeFile(
+      fakePnpmPath,
+      [
+        "#!/bin/sh",
+        "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+        "  exit 1",
+        "fi",
+        "exit 0",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.chmod(fakePnpmPath, 0o755);
 
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.copyFile(
@@ -897,6 +1061,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["commit", "-m", "Add worktree provision script"]);
 
     try {
+      process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
       const workspace = await realizeExecutionWorkspace({
         base: {
           baseCwd: repoRoot,
@@ -956,6 +1121,12 @@ describe("realizeExecutionWorkspace", () => {
       expect(resolvePaperclipConfigPath()).toBe(configPath);
     } finally {
       process.chdir(previousCwd);
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      await fs.rm(fakeBin, { recursive: true, force: true });
     }
   }, 15_000);
 
@@ -1065,6 +1236,9 @@ describe("realizeExecutionWorkspace", () => {
 
   it("provisions successfully when install is needed but there are no symlinked node_modules to move", async () => {
     const repoRoot = await createTempRepo();
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-no-cli-bin-"));
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const originalPath = process.env.PATH;
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(
       path.join(repoRoot, "package.json"),
@@ -1096,6 +1270,23 @@ describe("realizeExecutionWorkspace", () => {
     );
     await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
     await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);
+    await fs.writeFile(
+      fakePnpmPath,
+      [
+        "#!/bin/sh",
+        "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+        "  exit 1",
+        "fi",
+        "if [ \"$1\" = \"install\" ]; then",
+        "  mkdir -p \"$PWD/node_modules\"",
+        "  exit 0",
+        "fi",
+        "exit 0",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.chmod(fakePnpmPath, 0o755);
 
     await fs.mkdir(path.join(repoRoot, "node_modules"), { recursive: true });
     await fs.writeFile(path.join(repoRoot, "node_modules", ".keep"), "", "utf8");
@@ -1103,37 +1294,47 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["add", "package.json", "pnpm-lock.yaml", "scripts/provision-worktree.sh"]);
     await runGit(repoRoot, ["commit", "-m", "Add minimal provision fixture"]);
 
-    const workspace = await realizeExecutionWorkspace({
-      base: {
-        baseCwd: repoRoot,
-        source: "project_primary",
-        projectId: "project-1",
-        workspaceId: "workspace-1",
-        repoUrl: null,
-        repoRef: "HEAD",
-      },
-      config: {
-        workspaceStrategy: {
-          type: "git_worktree",
-          branchTemplate: "{{issue.identifier}}-{{slug}}",
-          provisionCommand: "bash ./scripts/provision-worktree.sh",
+    try {
+      process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
+      const workspace = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
         },
-      },
-      issue: {
-        id: "issue-1",
-        identifier: "PAP-552",
-        title: "Install without moved symlinks",
-      },
-      agent: {
-        id: "agent-1",
-        name: "Codex Coder",
-        companyId: "company-1",
-      },
-    });
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            provisionCommand: "bash ./scripts/provision-worktree.sh",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-552",
+          title: "Install without moved symlinks",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
 
-    await expect(fs.readFile(path.join(workspace.cwd, ".paperclip", "config.json"), "utf8")).resolves.toContain(
-      "\"database\"",
-    );
+      await expect(fs.readFile(path.join(workspace.cwd, ".paperclip", "config.json"), "utf8")).resolves.toContain(
+        "\"database\"",
+      );
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      await fs.rm(fakeBin, { recursive: true, force: true });
+    }
   }, 30_000);
 
   it("fails instead of writing an unseeded fallback config when worktree init errors after CLI detection succeeds", async () => {
@@ -1251,7 +1452,7 @@ describe("realizeExecutionWorkspace", () => {
         cwd: worktreeRoot,
         env: {
           ...process.env,
-          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
           PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
         },
@@ -1483,6 +1684,7 @@ describe("realizeExecutionWorkspace", () => {
   it("reuses an existing branch without resetting it when recreating a missing worktree", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-450-recreate-missing-worktree";
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
     await runGit(repoRoot, ["checkout", "-b", branchName]);
     await fs.writeFile(path.join(repoRoot, "feature.txt"), "preserve me\n", "utf8");
@@ -1516,12 +1718,19 @@ describe("realizeExecutionWorkspace", () => {
         name: "Codex Coder",
         companyId: "company-1",
       },
+      recorder,
     });
 
     expect(workspace.branchName).toBe(branchName);
     await expect(fs.readFile(path.join(workspace.cwd, "feature.txt"), "utf8")).resolves.toBe("preserve me\n");
     const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.cwd })).stdout.trim();
     expect(actualHead).toBe(expectedHead);
+    const worktreePrepareCommands = operations
+      .filter((operation) => operation.phase === "worktree_prepare")
+      .map((operation) => operation.command);
+    expect(worktreePrepareCommands).toEqual([
+      `git worktree add ${path.join(repoRoot, ".paperclip", "worktrees", branchName)} ${branchName}`,
+    ]);
   });
 
   it("reattaches a missing persisted git worktree before manual control starts it", async () => {
@@ -2002,6 +2211,132 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations[2]?.metadata).toMatchObject({
       cleanupAction: "branch_delete",
     });
+  });
+
+  it("uses PR head SHA from issue title as worktree base ref when available", async () => {
+    const repoRoot = await createTempRepo();
+
+    await fs.writeFile(path.join(repoRoot, "pr-change.txt"), "PR content\n", "utf8");
+    await runGit(repoRoot, ["add", "pr-change.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "PR commit"]);
+    const prHeadSha = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot })).stdout.trim();
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-pr-review",
+        identifier: "PAP-999",
+        title: `[PR:F4CTE/PolyForge#1368@${prHeadSha}] Review: bump dependency`,
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.strategy).toBe("git_worktree");
+    expect(realized.created).toBe(true);
+
+    const worktreeHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: realized.cwd })).stdout.trim();
+    expect(worktreeHead).toBe(prHeadSha);
+    expect(realized.warnings).toEqual([]);
+  });
+
+  it("uses short PR head SHA from issue title as worktree base ref", async () => {
+    const repoRoot = await createTempRepo();
+
+    await fs.writeFile(path.join(repoRoot, "pr-bump.txt"), "PR bump content\n", "utf8");
+    await runGit(repoRoot, ["add", "pr-bump.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Short SHA PR commit"]);
+    const fullHeadSha = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: repoRoot })).stdout.trim();
+    const shortHeadSha = fullHeadSha.slice(0, 12);
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-pr-review-short-sha",
+        identifier: "PAP-997",
+        title: `[PR:F4CTE/PolyForge#1368@${shortHeadSha}] Review: bump tailwindcss`,
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.strategy).toBe("git_worktree");
+    expect(realized.created).toBe(true);
+
+    const worktreeHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: realized.cwd })).stdout.trim();
+    expect(worktreeHead).toBe(fullHeadSha);
+    expect(realized.warnings).toEqual([]);
+  });
+
+  it("warns when PR head SHA from issue title is not used as worktree base ref", async () => {
+    const repoRoot = await createTempRepo();
+
+    const nonexistentSha = "0000000000000000000000000000000000000000";
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-pr-review",
+        identifier: "PAP-998",
+        title: `[PR:F4CTE/PolyForge#1368@${nonexistentSha}] Review: bump dependency (unavailable commit)`,
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.strategy).toBe("git_worktree");
+    expect(realized.created).toBe(true);
+    expect(realized.warnings.length).toBeGreaterThanOrEqual(1);
+    expect(realized.warnings.some((w) => w.includes("PR review worktree HEAD"))).toBe(true);
+    expect(realized.warnings.some((w) => w.includes(nonexistentSha))).toBe(true);
   });
 });
 
