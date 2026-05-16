@@ -1,5 +1,4 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
-import { applyTurnBoundary, createTurnBoundaryState, type TurnBoundaryState } from "../shared/turn-boundary.js";
 
 function safeJsonParse(text: string): unknown {
   try {
@@ -25,11 +24,7 @@ function extractErrorText(value: unknown): string {
   return asString(record.message) || asString(record.detail) || asString(record.code);
 }
 
-function parseLineInternal(
-  line: string,
-  ts: string,
-  thoughtBoundary: TurnBoundaryState,
-): TranscriptEntry[] {
+export function parseGrokStdoutLine(line: string, ts: string): TranscriptEntry[] {
   const parsed = asRecord(safeJsonParse(line));
   if (!parsed) {
     return [{ kind: "stdout", ts, text: line }];
@@ -39,14 +34,12 @@ function parseLineInternal(
 
   if (type === "thought") {
     const text = asString(parsed.data);
-    if (!text) return [];
-    return [{ kind: "thinking", ts, text: applyTurnBoundary(thoughtBoundary, text), delta: true }];
+    return text ? [{ kind: "thinking", ts, text, delta: true }] : [];
   }
 
   if (type === "text") {
     const text = asString(parsed.data);
-    if (!text) return [];
-    return [{ kind: "assistant", ts, text, delta: true }];
+    return text ? [{ kind: "assistant", ts, text, delta: true }] : [];
   }
 
   if (type === "error") {
@@ -65,23 +58,4 @@ function parseLineInternal(
   }
 
   return [{ kind: "system", ts, text: `event: ${type || "unknown"}` }];
-}
-
-export function createGrokStdoutParser() {
-  let thoughtBoundary = createTurnBoundaryState();
-  return {
-    parseLine(line: string, ts: string): TranscriptEntry[] {
-      return parseLineInternal(line, ts, thoughtBoundary);
-    },
-    reset() {
-      thoughtBoundary = createTurnBoundaryState();
-    },
-  };
-}
-
-// Stateless fallback for callers that haven't migrated to the stateful factory.
-// Without state, consecutive thought chunks at reasoning-turn boundaries can
-// still appear merged; prefer createGrokStdoutParser for live transcripts.
-export function parseGrokStdoutLine(line: string, ts: string): TranscriptEntry[] {
-  return parseLineInternal(line, ts, createTurnBoundaryState());
 }
