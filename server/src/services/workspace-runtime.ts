@@ -529,6 +529,16 @@ function gitErrorIncludes(error: unknown, needle: string) {
   return message.toLowerCase().includes(needle.toLowerCase());
 }
 
+function gitErrorIndicatesExistingRef(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("already exists") ||
+    normalized.includes("existe déjà") ||
+    normalized.includes("existe deja")
+  );
+}
+
 type GitWorktreeListEntry = {
   worktree: string;
   branch: string | null;
@@ -1151,7 +1161,7 @@ export async function realizeExecutionWorkspace(input: {
       failureLabel: `git worktree add ${worktreePath}`,
     });
   } catch (error) {
-    if (!gitErrorIncludes(error, "already exists")) {
+    if (!gitErrorIndicatesExistingRef(error)) {
       throw error;
     }
     try {
