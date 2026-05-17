@@ -1856,7 +1856,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     // A subsequent reassignment-only update must NOT overwrite the operator's
     // explicit choice with the new assignee's default.
-    const     reassigned = await svc.update(created.id, {
+    const reassigned = await svc.update(created.id, {
       assigneeAgentId: secondAgentId,
     });
     expect(reassigned!.executionWorkspaceSettings).toMatchObject({

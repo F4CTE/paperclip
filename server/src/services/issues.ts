@@ -4159,9 +4159,9 @@ export function issueService(db: Db) {
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
         }
-        // repo compatibility guard: if the inherited execution workspace is
-        // linked to a different project workspace than the resolved one, clear
-        // the inherited workspace so a new one gets created for the correct repo.
+        // repo compatibility guard: if an execution workspace is linked to a
+        // different project workspace than the resolved one, clear it so a
+        // new workspace gets created for the correct repo.
         if (executionWorkspaceId && projectWorkspaceId) {
           const ew = await tx
             .select({ projectWorkspaceId: executionWorkspaces.projectWorkspaceId })
