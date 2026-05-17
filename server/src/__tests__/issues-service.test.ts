@@ -1856,7 +1856,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     // A subsequent reassignment-only update must NOT overwrite the operator's
     // explicit choice with the new assignee's default.
-    const reassigned = await svc.update(created.id, {
+    const     reassigned = await svc.update(created.id, {
       assigneeAgentId: secondAgentId,
     });
     expect(reassigned!.executionWorkspaceSettings).toMatchObject({
@@ -1961,6 +1961,87 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
     });
+  });
+
+  it("clears inherited execution workspace when projectWorkspaceId does not match", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const parentIssueId = randomUUID();
+    const parentProjectWorkspaceId = randomUUID();
+    const parentExecutionWorkspaceId = randomUUID();
+    const explicitProjectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values([
+      {
+        id: parentProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Parent workspace",
+      },
+      {
+        id: explicitProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Explicit workspace",
+      },
+    ]);
+
+    await db.insert(executionWorkspaces).values([
+      {
+        id: parentExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId: parentProjectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Parent worktree",
+        status: "active",
+        providerType: "git_worktree",
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: parentProjectWorkspaceId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: parentExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceRuntime: { profile: "agent" },
+      },
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId,
+      title: "Child issue",
+      projectWorkspaceId: explicitProjectWorkspaceId,
+    });
+
+    expect(child.projectWorkspaceId).toBe(explicitProjectWorkspaceId);
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspacePreference).toBeNull();
+    expect(child.executionWorkspaceSettings).toBeNull();
   });
 
   it("inherits workspace linkage from an explicit source issue without creating a parent-child relationship", async () => {
@@ -2724,6 +2805,87 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
     });
+  });
+
+  it("clears inherited execution workspace when projectWorkspaceId does not match", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const parentIssueId = randomUUID();
+    const parentProjectWorkspaceId = randomUUID();
+    const parentExecutionWorkspaceId = randomUUID();
+    const explicitProjectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values([
+      {
+        id: parentProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Parent workspace",
+      },
+      {
+        id: explicitProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Explicit workspace",
+      },
+    ]);
+
+    await db.insert(executionWorkspaces).values([
+      {
+        id: parentExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId: parentProjectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Parent worktree",
+        status: "active",
+        providerType: "git_worktree",
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: parentProjectWorkspaceId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: parentExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceRuntime: { profile: "agent" },
+      },
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId,
+      title: "Child issue",
+      projectWorkspaceId: explicitProjectWorkspaceId,
+    });
+
+    expect(child.projectWorkspaceId).toBe(explicitProjectWorkspaceId);
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspacePreference).toBeNull();
+    expect(child.executionWorkspaceSettings).toBeNull();
   });
 
   it("inherits workspace linkage from an explicit source issue without creating a parent-child relationship", async () => {
