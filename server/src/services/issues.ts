@@ -34,6 +34,7 @@ import {
 } from "@paperclipai/db";
 import type {
   AcceptedPlanDecomposition,
+  IssueComment,
   IssueCommentAuthorType,
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -5756,6 +5757,9 @@ export function issueService(db: Db) {
         userId?: string | null;
         runId?: string | null;
       },
+      options?: {
+        afterTombstone?: (comment: IssueComment, tx: any) => Promise<void>;
+      },
     ) => {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -5786,7 +5790,10 @@ export function issueService(db: Db) {
           .set({ updatedAt: now })
           .where(eq(issues.id, comment.issueId));
 
-        return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+        const redacted = redactIssueComment(comment, currentUserRedactionOptions.enabled);
+        await options?.afterTombstone?.(redacted, tx);
+
+        return redacted;
       });
     },
 
