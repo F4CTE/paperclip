@@ -1,22 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  activityLog,
   agents,
-  agentRuntimeState,
   agentWakeupRequests,
   companies,
-  companySkills,
   createDb,
   documentRevisions,
   documents,
-  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
-  issueRelations,
-  issueTreeHolds,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -89,35 +83,39 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
 }
 
 async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createDb>) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
-      await db.delete(companySkills);
-      await db.delete(issueComments);
-      await db.delete(issueDocuments);
-      await db.delete(documentRevisions);
-      await db.delete(documents);
-      await db.delete(issueRelations);
-      await db.delete(issueTreeHolds);
-      await db.delete(issues);
-      await db.delete(heartbeatRunEvents);
-      await db.delete(activityLog);
-      await db.delete(heartbeatRuns);
-      await db.delete(agentWakeupRequests);
-      await db.delete(agentRuntimeState);
-      await db.delete(agents);
-      await db.delete(companies);
+      await db.execute(sql.raw(`
+        TRUNCATE TABLE
+          "company_skills",
+          "issue_comments",
+          "issue_documents",
+          "document_revisions",
+          "documents",
+          "issue_relations",
+          "issue_tree_holds",
+          "issues",
+          "heartbeat_run_events",
+          "activity_log",
+          "heartbeat_runs",
+          "agent_wakeup_requests",
+          "agent_runtime_state",
+          "agents",
+          "companies"
+        RESTART IDENTITY CASCADE
+      `));
       return;
     } catch (error) {
       const isLateCommentRace =
         error instanceof Error &&
         error.message.includes("issue_comments_issue_id_issues_id_fk");
-      if (!isLateCommentRace || attempt === 4) {
+      if (!isLateCommentRace || attempt === 9) {
         throw error;
       }
 
       // Heartbeat completion can write issue-thread comments shortly after the
       // run leaves queued/running. Retry the dependent deletes once those land.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
 }
@@ -827,5 +825,92 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("continuation summary says the executor should wait");
     expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("skips non-interaction wakeups for done issues before enqueuing a queued run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Already done",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const result = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_children_completed",
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_children_completed",
+      },
+    });
+
+    expect(result).toBeNull();
+
+    const skippedWakeups = await db
+      .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(skippedWakeups.length).toBe(1);
+    expect(skippedWakeups[0]?.status).toBe("skipped");
+    expect(skippedWakeups[0]?.reason).toBe("issue_terminal_status");
+
+    const queuedRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(queuedRuns.length).toBe(0);
+  });
+
+  it("allows comment-driven interaction wakeups for done issues", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Done but commented",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const result = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      contextSnapshot: {
+        issueId,
+        commentId,
+        wakeCommentId: commentId,
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(result).not.toBeNull();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const skippedWakeups = await db
+      .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "skipped"),
+        ),
+      );
+    expect(skippedWakeups.length).toBe(0);
   });
 });
