@@ -51,6 +51,7 @@ export interface ExecutionWorkspaceIssueRef {
   id: string;
   identifier: string | null;
   title: string | null;
+  workMode?: string | null;
 }
 
 export interface ExecutionWorkspaceAgentRef {
@@ -107,6 +108,11 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
   profileKind: string;
   processGroupId: number | null;
 }
+
+type StoppedRuntimeServiceReuseCandidate = {
+  id: string;
+  port: number | null;
+};
 
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
@@ -523,6 +529,16 @@ function gitErrorIncludes(error: unknown, needle: string) {
   return message.toLowerCase().includes(needle.toLowerCase());
 }
 
+function gitErrorIndicatesExistingRef(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("already exists") ||
+    normalized.includes("existe déjà") ||
+    normalized.includes("existe deja")
+  );
+}
+
 type GitWorktreeListEntry = {
   worktree: string;
   branch: string | null;
@@ -612,6 +628,16 @@ async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
 
 async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
+}
+
+async function nextAvailableSiblingPath(targetPath: string): Promise<string> {
+  for (let suffix = 2; suffix <= 100; suffix += 1) {
+    const candidate = `${targetPath}-${suffix}`;
+    if (!await directoryExists(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error(`Unable to allocate a free worktree path near "${targetPath}".`);
 }
 
 async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
@@ -707,6 +733,7 @@ function buildWorkspaceCommandEnv(input: {
   env.PAPERCLIP_ISSUE_ID = input.issue?.id ?? "";
   env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
   env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
+  env.PAPERCLIP_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
   return env;
 }
 
@@ -1012,7 +1039,7 @@ export async function realizeExecutionWorkspace(input: {
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
-  const worktreePath = path.join(worktreeParentDir, branchName);
+  let worktreePath = path.join(worktreeParentDir, branchName);
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
@@ -1078,8 +1105,34 @@ export async function realizeExecutionWorkspace(input: {
     if (validation?.valid) {
       return await reuseExistingWorktree(worktreePath);
     }
-    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+    if (validation && !validation.valid && validation.reason.startsWith("worktree HEAD is on ")) {
+      const originalWorktreePath = worktreePath;
+      worktreePath = await nextAvailableSiblingPath(worktreePath);
+      if (input.recorder) {
+        await input.recorder.recordOperation({
+          phase: "worktree_prepare",
+          cwd: repoRoot,
+          metadata: {
+            repoRoot,
+            worktreePath,
+            originalWorktreePath,
+            branchName,
+            baseRef,
+            created: false,
+            pathCollision: true,
+            collisionReason: validation.reason,
+          },
+          run: async () => ({
+            status: "succeeded",
+            exitCode: 0,
+            system: `Selected alternate git worktree path ${worktreePath}; ${originalWorktreePath} is on another branch.\n`,
+          }),
+        });
+      }
+    } else {
+      const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+      throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+    }
   }
 
   const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
@@ -1108,7 +1161,7 @@ export async function realizeExecutionWorkspace(input: {
       failureLabel: `git worktree add ${worktreePath}`,
     });
   } catch (error) {
-    if (!gitErrorIncludes(error, "already exists")) {
+    if (!gitErrorIndicatesExistingRef(error)) {
       throw error;
     }
     try {
@@ -1815,6 +1868,33 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
     });
 }
 
+async function findStoppedRuntimeServiceReuseCandidate(input: {
+  db?: Db;
+  companyId: string;
+  reuseKey: string | null;
+}): Promise<StoppedRuntimeServiceReuseCandidate | null> {
+  if (!input.db || !input.reuseKey) return null;
+  const row = await input.db
+    .select({
+      id: workspaceRuntimeServices.id,
+      port: workspaceRuntimeServices.port,
+    })
+    .from(workspaceRuntimeServices)
+    .where(
+      and(
+        eq(workspaceRuntimeServices.companyId, input.companyId),
+        eq(workspaceRuntimeServices.reuseKey, input.reuseKey),
+        eq(workspaceRuntimeServices.provider, "local_process"),
+        eq(workspaceRuntimeServices.status, "stopped"),
+      ),
+    )
+    .orderBy(desc(workspaceRuntimeServices.updatedAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  return row ?? null;
+}
+
 function clearIdleTimer(record: RuntimeServiceRecord) {
   if (!record.idleTimer) return;
   clearTimeout(record.idleTimer);
@@ -1927,9 +2007,20 @@ async function startLocalRuntimeService(input: {
   const serviceIdentityFingerprint = input.reuseKey ?? envFingerprint;
   const explicitPort = identity.explicitPort;
   const identityPort = identity.identityPort;
+  const stoppedReuseCandidate = await findStoppedRuntimeServiceReuseCandidate({
+    db: input.db,
+    companyId: input.agent.companyId,
+    reuseKey: input.reuseKey,
+  });
+  const reusableStoppedPort =
+    asString(portConfig.type, "") === "auto" && stoppedReuseCandidate?.port
+      ? (await readLocalServicePortOwner(stoppedReuseCandidate.port))
+        ? null
+        : stoppedReuseCandidate.port
+      : null;
   const port =
     asString(portConfig.type, "") === "auto"
-      ? await allocatePort()
+      ? (reusableStoppedPort ?? await allocatePort())
       : explicitPort > 0
         ? explicitPort
         : null;
@@ -2073,7 +2164,7 @@ async function startLocalRuntimeService(input: {
   }
 
   const record: RuntimeServiceRecord = {
-    id: randomUUID(),
+    id: stoppedReuseCandidate?.id ?? randomUUID(),
     companyId: input.agent.companyId,
     projectId: input.workspace.projectId,
     projectWorkspaceId: input.workspace.workspaceId,

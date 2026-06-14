@@ -588,6 +588,14 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
     } else {
+      if (
+        existing.closedAt != null &&
+        req.body.status !== undefined &&
+        req.body.status !== "archived" &&
+        req.body.status !== "cleanup_failed"
+      ) {
+        patch.closedAt = null;
+      }
       const updatedWorkspace = await svc.update(id, patch);
       if (!updatedWorkspace) {
         res.status(404).json({ error: "Execution workspace not found" });
