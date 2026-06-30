@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
+const r0b1nAgentId = "82144658-906e-4ca2-91f9-ca3164c5a925";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
@@ -180,6 +181,8 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     assigneeUserId: null,
     createdByUserId: "board-user",
     identifier: "PAP-1649",
+    originKind: "manual",
+    originId: null,
     title: "Owned active issue",
     executionPolicy: null,
     executionState: null,
@@ -270,6 +273,18 @@ function peerActor(overrides: Record<string, unknown> = {}) {
     companyId,
     source: "agent_key",
     runId: "66666666-6666-4666-8666-666666666666",
+    ...overrides,
+  };
+}
+
+function r0b1nActor(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "agent",
+    agentId: r0b1nAgentId,
+    companyId,
+    source: "agent_key",
+    keyScope: { kind: "standard" },
+    runId: "82144658-906e-4ca2-91f9-ca3164c5a925",
     ...overrides,
   };
 }
@@ -411,6 +426,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === r0b1nAgentId) return makeAgent(r0b1nAgentId, { role: "ceo", permissions: { canCreateAgents: true } });
       if (id === ownerAgentId) return makeAgent(ownerAgentId);
       if (id === peerAgentId) return makeAgent(peerAgentId);
       return null;
@@ -971,6 +987,150 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("lets R0b1n promote manual-origin PolyForge GitHub issue backlog records with only status and comment", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+      title: "[PolyForge#1847] Add approval gate for MCP-triggered live trading actions",
+      originKind: "manual",
+      originId: null,
+    }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({
+        status: "backlog",
+        assigneeAgentId: ownerAgentId,
+        title: "[PolyForge#1847] Add approval gate for MCP-triggered live trading actions",
+        originKind: "manual",
+        originId: null,
+      }),
+      ...patch,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:mutate",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test default.",
+    }));
+
+    const res = await request(await createApp(r0b1nActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "todo",
+        comment: "Promoting the still-open GitHub issue for implementation queue work.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "todo",
+        actorAgentId: r0b1nAgentId,
+      }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Promoting the still-open GitHub issue for implementation queue work.",
+      expect.objectContaining({
+        agentId: r0b1nAgentId,
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("keeps R0b1n PolyForge backlog promotion limited to status plus comment", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+      title: "[PolyForge#1880] Validate order list date filters before constructing Date objects",
+      originKind: "manual",
+      originId: null,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:mutate",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test default.",
+    }));
+
+    const res = await request(await createApp(r0b1nActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "todo",
+        title: "[PolyForge#1880] Renamed by queue maintenance",
+        comment: "Promoting the still-open GitHub issue for implementation queue work.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("denies R0b1n PolyForge backlog promotion through task bridge scoped keys", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+      title: "[PolyForge#1881] Repair queue promotion bridge scope",
+      originKind: "manual",
+      originId: null,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:mutate",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_scope" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Task bridge key cannot mutate unrelated issues." : "Allowed by test default.",
+    }));
+
+    const res = await request(await createApp(r0b1nActor({
+      keyId: "99999999-9999-4999-8999-999999999999",
+      keyScope: {
+        kind: "task_bridge",
+        parentIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      },
+    })))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "todo",
+        comment: "Promoting the still-open GitHub issue for implementation queue work.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("denies R0b1n backlog promotion for manual records without a PolyForge GitHub issue title", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+      title: "Unlinked implementation backlog item",
+      originKind: "manual",
+      originId: null,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:mutate",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test default.",
+    }));
+
+    const res = await request(await createApp(r0b1nActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "todo",
+        comment: "Promoting this manual backlog item.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it.each([
