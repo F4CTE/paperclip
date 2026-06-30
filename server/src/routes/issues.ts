@@ -157,6 +157,8 @@ import { externalObjectService } from "../services/external-objects.js";
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+  originKind: z.literal("github_issue").optional(),
+  originId: z.string().trim().min(1).max(500).optional().nullable(),
 });
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
@@ -1944,17 +1946,37 @@ export function issueRoutes(
       parentId: string | null;
       status: string;
       originKind?: string | null;
+      originId?: string | null;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
     body: Record<string, unknown>,
   ): Promise<"allow" | "deny" | "not_applicable"> {
     if (req.actor.type !== "agent") return "not_applicable";
-    if (issue.originKind !== "github_issue" || issue.status !== "backlog") return "not_applicable";
-    if (body.status !== "todo") return "not_applicable";
+    const requestedOriginKind = typeof body.originKind === "string" ? body.originKind : undefined;
+    const requestedOriginId = typeof body.originId === "string" ? body.originId : undefined;
+    const allowedGithubIssueOriginId = (value: string | null | undefined) =>
+      /^github-issue:F4CTE\/(?:PolyForge|polyforge-mcp|polyforge-sdk-python|polyforge-sdk-rust|polyforge-sdk-ts)#\d+$/.test(
+        value ?? "",
+      );
+    const isGithubIssueQueueRecord =
+      issue.originKind === "github_issue" ||
+      (
+        issue.originKind === "manual" &&
+        requestedOriginKind === "github_issue" &&
+        allowedGithubIssueOriginId(requestedOriginId)
+      );
+    if (!isGithubIssueQueueRecord || issue.status !== "backlog") return "not_applicable";
+    if (requestedOriginKind !== undefined && requestedOriginKind !== "github_issue") return "not_applicable";
+    if (requestedOriginId !== undefined && !allowedGithubIssueOriginId(requestedOriginId)) return "not_applicable";
+    const requestedStatus = typeof body.status === "string" ? body.status : undefined;
+    const requestedHiddenAt = body.hiddenAt !== undefined;
+    const isPromotion = requestedStatus === "todo";
+    const isStaleClosure = requestedStatus === "cancelled" || requestedHiddenAt;
+    if (!isPromotion && !isStaleClosure) return "not_applicable";
     if (body.assigneeUserId !== undefined) return "not_applicable";
 
-    const allowedFields = new Set(["status", "assigneeAgentId", "comment"]);
+    const allowedFields = new Set(["status", "assigneeAgentId", "comment", "hiddenAt", "originKind", "originId"]);
     if (Object.keys(body).some((key) => !allowedFields.has(key))) return "not_applicable";
 
     const requestedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
@@ -1963,7 +1985,7 @@ export function issueRoutes(
     );
     const targetAssigneeAgentId =
       requestedAssigneeAgentId === undefined ? issue.assigneeAgentId : requestedAssigneeAgentId;
-    if (!targetAssigneeAgentId) return "not_applicable";
+    if (isPromotion && !targetAssigneeAgentId) return "not_applicable";
 
     try {
       await assertCanAssignTasks(req, issue.companyId, {
@@ -1974,7 +1996,7 @@ export function issueRoutes(
           parentIssueId: issue.parentId,
         }),
         parentIssueId: issue.parentId,
-        assigneeAgentId: targetAssigneeAgentId,
+        assigneeAgentId: targetAssigneeAgentId ?? null,
         assigneeUserId: null,
       });
       return "allow";

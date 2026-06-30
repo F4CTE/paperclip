@@ -1391,6 +1391,149 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("allows task assigners to cancel stale imported GitHub backlog issues", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason:
+        input.action === "company_scope:read" ||
+          input.action === "issue:read" ||
+          input.action === "tasks:assign"
+          ? "allow_explicit_grant"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "company_scope:read" ||
+          input.action === "issue:read" ||
+          input.action === "tasks:assign"
+          ? "Allowed by scoped assignment grant."
+          : "Missing permission.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "github_issue",
+      originId: "github-issue:F4CTE/PolyForge#1855",
+      assigneeAgentId: null,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "cancelled",
+        comment: "Skipping stale imported GitHub issue; upstream issue is closed.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({
+        type: "issue",
+        companyId,
+        issueId,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      }),
+    }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "cancelled" }),
+    );
+  });
+
+  it("allows task assigners to repair origin metadata while cancelling stale imported GitHub backlog issues", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason:
+        input.action === "company_scope:read" ||
+          input.action === "issue:read" ||
+          input.action === "tasks:assign"
+          ? "allow_explicit_grant"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "company_scope:read" ||
+          input.action === "issue:read" ||
+          input.action === "tasks:assign"
+          ? "Allowed by scoped assignment grant."
+          : "Missing permission.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "manual",
+      originId: null,
+      assigneeAgentId: ownerAgentId,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "cancelled",
+        originKind: "github_issue",
+        originId: "github-issue:F4CTE/PolyForge#1855",
+        comment: "Skipping stale imported GitHub issue; upstream issue is closed.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "cancelled",
+        originKind: "github_issue",
+        originId: "github-issue:F4CTE/PolyForge#1855",
+      }),
+    );
+  });
+
+  it("allows task assigners to hide skipped imported GitHub backlog issues", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason:
+        input.action === "company_scope:read" ||
+          input.action === "issue:read" ||
+          input.action === "tasks:assign"
+          ? "allow_explicit_grant"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "company_scope:read" ||
+          input.action === "issue:read" ||
+          input.action === "tasks:assign"
+          ? "Allowed by scoped assignment grant."
+          : "Missing permission.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "github_issue",
+      originId: "github-issue:F4CTE/PolyForge#1855",
+      assigneeAgentId: null,
+    }));
+
+    const hiddenAt = "2026-06-30T09:00:00.000Z";
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        hiddenAt,
+        comment: "Hiding stale imported GitHub issue; upstream issue is closed.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ hiddenAt: new Date(hiddenAt) }),
+    );
+  });
+
   it("keeps non-GitHub backlog promotions inside the normal mutation boundary", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed:
@@ -1410,6 +1553,64 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .patch(`/api/issues/${issueId}`)
       .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps active GitHub issues outside the queue-maintenance bypass", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test grant.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "in_progress",
+      originKind: "github_issue",
+      assigneeAgentId: ownerAgentId,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "cancelled",
+        comment: "Attempting to skip active imported work.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects queue-maintenance origin repairs outside the PolyForge GitHub repos", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test grant.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "manual",
+      assigneeAgentId: ownerAgentId,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "cancelled",
+        originKind: "github_issue",
+        originId: "github-issue:OtherOrg/OtherRepo#1855",
+        comment: "Attempting to skip unrelated GitHub work.",
+      });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
