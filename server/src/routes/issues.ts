@@ -1965,6 +1965,14 @@ export function issueRoutes(
     return permissions.canPromoteGithubIssueBacklog === true || permissions.githubIssueQueuePromotion === true;
   }
 
+  function actorUsesNonStandardIssueMutationScope(actor: Request["actor"]) {
+    if (actor.type !== "agent") return false;
+    const scope = "keyScope" in actor
+      ? (actor as Request["actor"] & { keyScope?: { kind?: unknown } }).keyScope
+      : undefined;
+    return typeof scope?.kind === "string" && scope.kind !== "standard";
+  }
+
   async function decideAgentGithubIssueBacklogPromotion(
     req: Request,
     issue: {
@@ -1977,7 +1985,7 @@ export function issueRoutes(
     mutation: Record<string, unknown> | undefined,
   ) {
     if (req.actor.type !== "agent" || req.actor.source !== "agent_key" || !req.actor.agentId) return false;
-    if (req.actor.keyScope?.kind !== "standard") return false;
+    if (actorUsesNonStandardIssueMutationScope(req.actor)) return false;
     if (req.actor.companyId !== issue.companyId || issue.status !== "backlog") return false;
     if (!isStatusCommentOnlyBacklogPromotion(mutation)) return false;
     if (!isAllowedPolyForgeGithubIssueRecord(issue)) return false;
