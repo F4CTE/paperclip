@@ -1934,6 +1934,62 @@ export function issueRoutes(
     throw forbidden(decision.explanation);
   }
 
+  async function decideAgentGithubIssueBacklogPromotion(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      originKind?: string | null;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+    body: Record<string, unknown>,
+  ): Promise<"allow" | "deny" | "not_applicable"> {
+    if (req.actor.type !== "agent") return "not_applicable";
+    if (issue.originKind !== "github_issue" || issue.status !== "backlog") return "not_applicable";
+    if (body.status !== "todo") return "not_applicable";
+    if (body.assigneeUserId !== undefined) return "not_applicable";
+
+    const allowedFields = new Set(["status", "assigneeAgentId", "comment"]);
+    if (Object.keys(body).some((key) => !allowedFields.has(key))) return "not_applicable";
+
+    const requestedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+      issue.companyId,
+      body.assigneeAgentId as string | null | undefined,
+    );
+    const targetAssigneeAgentId =
+      requestedAssigneeAgentId === undefined ? issue.assigneeAgentId : requestedAssigneeAgentId;
+    if (!targetAssigneeAgentId) return "not_applicable";
+
+    try {
+      await assertCanAssignTasks(req, issue.companyId, {
+        issueId: issue.id,
+        projectId: await resolveAssignmentProjectId({
+          companyId: issue.companyId,
+          projectId: issue.projectId,
+          parentIssueId: issue.parentId,
+        }),
+        parentIssueId: issue.parentId,
+        assigneeAgentId: targetAssigneeAgentId,
+        assigneeUserId: null,
+      });
+      return "allow";
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({
+          error: err.message,
+          details: err.details,
+        });
+        return "deny";
+      }
+      throw err;
+    }
+  }
+
   function isTaskBridgeKeyActor(req: Request) {
     return req.actor.type === "agent" && req.actor.source === "agent_key" && req.actor.keyScope?.kind === "task_bridge";
   }
@@ -5767,7 +5823,9 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const githubIssuePromotionDecision = await decideAgentGithubIssueBacklogPromotion(req, res, existing, req.body);
+    if (githubIssuePromotionDecision === "deny") return;
+    if (githubIssuePromotionDecision !== "allow" && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);

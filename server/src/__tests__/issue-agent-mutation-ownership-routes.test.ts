@@ -1332,6 +1332,115 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("allows task assigners to promote imported GitHub backlog issues to todo", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason:
+        input.action === "company_scope:read" ||
+          input.action === "issue:read" ||
+          input.action === "tasks:assign"
+          ? "allow_explicit_grant"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "company_scope:read" ||
+          input.action === "issue:read" ||
+          input.action === "tasks:assign"
+          ? "Allowed by scoped assignment grant."
+          : "Missing permission.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "github_issue",
+      assigneeAgentId: ownerAgentId,
+    }));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "todo",
+        assigneeAgentId: peerAgentId,
+        comment: "Promoting GitHub issue work to the queue.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({
+        type: "issue",
+        companyId,
+        issueId,
+        assigneeAgentId: peerAgentId,
+        assigneeUserId: null,
+      }),
+    }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "todo",
+        assigneeAgentId: peerAgentId,
+      }),
+    );
+  });
+
+  it("keeps non-GitHub backlog promotions inside the normal mutation boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test grant.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "manual",
+      assigneeAgentId: ownerAgentId,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps GitHub backlog updates with extra fields inside the normal mutation boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test grant.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "github_issue",
+      assigneeAgentId: ownerAgentId,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo", title: "Broadened update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
