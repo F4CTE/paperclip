@@ -1355,6 +1355,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       status: "backlog",
       originKind: "github_issue",
+      originId: "github-issue:F4CTE/PolyForge#1855",
       assigneeAgentId: ownerAgentId,
     }));
     mockAgentService.resolveByReference.mockResolvedValue({
@@ -1617,6 +1618,64 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("keeps existing GitHub backlog issues with missing origin IDs inside the normal mutation boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test grant.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "github_issue",
+      originId: null,
+      assigneeAgentId: ownerAgentId,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "cancelled",
+        comment: "Attempting to skip GitHub work without an origin ID.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps existing GitHub backlog issues from unrelated repos inside the normal mutation boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed:
+        input.action === "company_scope:read" ||
+        input.action === "issue:read" ||
+        input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Missing permission." : "Allowed by test grant.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      originKind: "github_issue",
+      originId: "github-issue:OtherOrg/OtherRepo#1855",
+      assigneeAgentId: ownerAgentId,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "cancelled",
+        comment: "Attempting to skip unrelated GitHub work.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("keeps GitHub backlog updates with extra fields inside the normal mutation boundary", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed:
@@ -1630,6 +1689,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       status: "backlog",
       originKind: "github_issue",
+      originId: "github-issue:F4CTE/PolyForge#1855",
       assigneeAgentId: ownerAgentId,
     }));
 

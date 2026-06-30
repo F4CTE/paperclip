@@ -1960,7 +1960,10 @@ export function issueRoutes(
         value ?? "",
       );
     const isGithubIssueQueueRecord =
-      issue.originKind === "github_issue" ||
+      (
+        issue.originKind === "github_issue" &&
+        allowedGithubIssueOriginId(issue.originId)
+      ) ||
       (
         issue.originKind === "manual" &&
         requestedOriginKind === "github_issue" &&
