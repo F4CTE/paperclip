@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -428,7 +429,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
-  it("keeps board agent detail unredacted for low-trust agents", async () => {
+  it("redacts secret values in board agent detail for low-trust agents", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       permissions: {
@@ -437,11 +438,17 @@ describe.sequential("agent permission routes", () => {
       },
       adapterConfig: {
         command: "pnpm agent:run",
-        env: { PAPERCLIP_API_KEY: "secret-test-key" },
+        env: { PAPERCLIP_API_KEY: "test-placeholder-paperclip-token" },
       },
       runtimeConfig: {
         modelProfiles: {
-          default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+          default: {
+            enabled: true,
+            adapterConfig: {
+              model: "openai/gpt-5.4-mini",
+              env: { GITHUB_TOKEN: "test-placeholder-github-token" },
+            },
+          },
         },
       },
     });
@@ -459,14 +466,22 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
       command: "pnpm agent:run",
-      env: { PAPERCLIP_API_KEY: "secret-test-key" },
+      env: { PAPERCLIP_API_KEY: "***REDACTED***" },
     });
     expect(res.body.runtimeConfig).toMatchObject({
       modelProfiles: {
-        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+        default: {
+          enabled: true,
+          adapterConfig: {
+            model: "openai/gpt-5.4-mini",
+            env: { GITHUB_TOKEN: "***REDACTED***" },
+          },
+        },
       },
     });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
   }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
@@ -496,6 +511,118 @@ describe.sequential("agent permission routes", () => {
       }),
     ]);
   });
+
+  it("redacts secret values in company agent list for configuration readers", async () => {
+    mockAgentService.list.mockResolvedValue([{
+      ...baseAgent,
+      adapterConfig: {
+        command: "pnpm agent:run",
+        env: { PAPERCLIP_API_KEY: "test-placeholder-paperclip-token" },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              model: "openai/gpt-5.4-mini",
+              env: { GITHUB_TOKEN: "test-placeholder-github-token" },
+            },
+          },
+        },
+      },
+    }]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body[0].adapterConfig.env.PAPERCLIP_API_KEY).toBe("***REDACTED***");
+    expect(res.body[0].runtimeConfig.modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN).toBe("***REDACTED***");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
+  });
+
+  it("redacts agent self detail for agent actors", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        command: "pnpm agent:run",
+        env: { PAPERCLIP_API_KEY: "test-placeholder-paperclip-token" },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              env: { GITHUB_TOKEN: "test-placeholder-github-token" },
+            },
+          },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.command).toBe("pnpm agent:run");
+    expect(res.body.adapterConfig.env.PAPERCLIP_API_KEY).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN).toBe(REDACTED_EVENT_VALUE);
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
+  }, 20_000);
+
+  it("redacts agent detail when an agent actor reads itself by id", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        env: { PAPERCLIP_API_KEY: "test-placeholder-paperclip-token" },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              env: { GITHUB_TOKEN: "test-placeholder-github-token" },
+            },
+          },
+        },
+      },
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env.PAPERCLIP_API_KEY).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN).toBe(REDACTED_EVENT_VALUE);
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
+  }, 20_000);
 
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);

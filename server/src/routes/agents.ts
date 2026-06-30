@@ -568,7 +568,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : redactAgentConfigFields(agent)),
       chainOfCommand,
       access: accessState,
     };
@@ -1487,21 +1487,40 @@ export function agentRoutes(
     };
   }
 
-  function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
+  function redactAgentConfigFields(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
-      id: agent.id,
-      companyId: agent.companyId,
-      name: agent.name,
-      role: agent.role,
-      title: agent.title,
-      status: agent.status,
-      reportsTo: agent.reportsTo,
-      adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
-      runtimeConfig: redactEventPayload(agent.runtimeConfig),
-      permissions: agent.permissions,
-      updatedAt: agent.updatedAt,
+      ...agent,
+      adapterConfig: redactEventPayload(
+        typeof agent.adapterConfig === "object" && agent.adapterConfig !== null
+          ? (agent.adapterConfig as Record<string, unknown>)
+          : {},
+      ),
+      runtimeConfig: redactEventPayload(
+        typeof agent.runtimeConfig === "object" && agent.runtimeConfig !== null
+          ? (agent.runtimeConfig as Record<string, unknown>)
+          : {},
+      ),
+    };
+  }
+
+  function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!agent) return null;
+    const redacted = redactAgentConfigFields(agent);
+    if (!redacted) return null;
+    return {
+      id: redacted.id,
+      companyId: redacted.companyId,
+      name: redacted.name,
+      role: redacted.role,
+      title: redacted.title,
+      status: redacted.status,
+      reportsTo: redacted.reportsTo,
+      adapterType: redacted.adapterType,
+      adapterConfig: redacted.adapterConfig,
+      runtimeConfig: redacted.runtimeConfig,
+      permissions: redacted.permissions,
+      updatedAt: redacted.updatedAt,
     };
   }
 
@@ -1820,7 +1839,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentConfigFields(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
