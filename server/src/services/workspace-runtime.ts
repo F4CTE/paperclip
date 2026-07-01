@@ -1217,7 +1217,13 @@ export async function realizeExecutionWorkspace(input: {
     if (validation?.valid) {
       return await reuseExistingWorktree(worktreePath);
     }
-    worktreePath = await nextAvailableWorktreePath(preferredWorktreePath);
+    const canUseAlternatePath = validation && !validation.valid && validation.reason.startsWith("worktree HEAD is on ");
+    if (canUseAlternatePath) {
+      worktreePath = await nextAvailableWorktreePath(preferredWorktreePath);
+    } else {
+      const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+      throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+    }
   }
 
   const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);

@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
+import { HttpError } from "../errors.js";
 import { documentService } from "./documents.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
@@ -107,6 +108,33 @@ function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput, previou
   }
   if (run.status === "cancelled") return "Confirm the cancellation reason before starting another run.";
   return previousNextAction ?? "Resume implementation from the acceptance criteria, latest comments, and this summary.";
+}
+
+function hasContinuationSummaryCreateConflict(error: unknown): boolean {
+  let current: unknown = error;
+  while (current && typeof current === "object") {
+    const message = "message" in current && typeof current.message === "string" ? current.message : null;
+    if (
+      current instanceof HttpError &&
+      current.status === 409 &&
+      current.message === "Document key already exists on this issue"
+    ) {
+      return true;
+    }
+    const code = "code" in current ? current.code : undefined;
+    const constraintName = "constraint_name" in current ? current.constraint_name : undefined;
+    if (code === "23505" && constraintName === "issue_documents_company_issue_key_uq") {
+      return true;
+    }
+    if (
+      message?.includes("duplicate key value violates unique constraint") &&
+      message.includes("issue_documents_company_issue_key_uq")
+    ) {
+      return true;
+    }
+    current = "cause" in current ? current.cause : null;
+  }
+  return false;
 }
 
 function bulletList(items: string[], empty: string) {
@@ -269,16 +297,34 @@ export async function refreshIssueContinuationSummary(input: {
     agent,
     previousSummaryBody: existing?.body ?? null,
   });
-  const result = await documentService(db).upsertIssueDocument({
-    issueId,
-    key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-    title: ISSUE_CONTINUATION_SUMMARY_TITLE,
-    format: "markdown",
-    body,
-    baseRevisionId: existing?.latestRevisionId ?? null,
-    changeSummary: `Refresh continuation summary after run ${run.id}`,
-    createdByAgentId: agent.id,
-    createdByRunId: run.id,
-  });
+  const writeSummary = async (baseRevisionId: string | null) =>
+    documentService(db).upsertIssueDocument({
+      issueId,
+      key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+      title: ISSUE_CONTINUATION_SUMMARY_TITLE,
+      format: "markdown",
+      body,
+      baseRevisionId,
+      changeSummary: `Refresh continuation summary after run ${run.id}`,
+      createdByAgentId: agent.id,
+      createdByRunId: run.id,
+    });
+
+  let result;
+  try {
+    result = await writeSummary(existing?.latestRevisionId ?? null);
+  } catch (error) {
+    if (
+      !hasContinuationSummaryCreateConflict(error) ||
+      existing?.latestRevisionId
+    ) {
+      throw error;
+    }
+
+    const latest = await getIssueContinuationSummaryDocument(db, issueId);
+    if (!latest?.latestRevisionId) throw error;
+    result = await writeSummary(latest.latestRevisionId);
+  }
+
   return result.document;
 }

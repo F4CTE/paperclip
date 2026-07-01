@@ -1,10 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  agents,
+  companies,
+  createDb,
+  documentRevisions,
+  documents,
+  heartbeatRuns,
+  issueDocuments,
+  issues,
+} from "@paperclipai/db";
 import {
   ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS,
   buildContinuationSummaryMarkdown,
   continuationSummaryParksExecutor,
   extractContinuationSummaryNextAction,
+  getIssueContinuationSummaryDocument,
+  refreshIssueContinuationSummary,
 } from "../services/issue-continuation-summary.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 describe("issue continuation summaries", () => {
   it("builds bounded issue-local handoff context with required sections", () => {
@@ -111,5 +128,134 @@ describe("issue continuation summaries", () => {
     ].join("\n");
 
     expect(continuationSummaryParksExecutor(body)).toBe(false);
+  });
+});
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("issue continuation summaries persistence", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-continuation-summary-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(documentRevisions);
+    await db.delete(issueDocuments);
+    await db.delete(heartbeatRuns);
+    await db.delete(documents);
+    await db.delete(agents);
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("retries when concurrent first writes race on the continuation summary key", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "PAP-2001",
+      title: "Concurrent continuation summary refresh",
+      description: "Reproduce the continuation summary create race.",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "Engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: firstRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        contextSnapshot: { issueId },
+      },
+      {
+        id: secondRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        contextSnapshot: { issueId },
+      },
+    ]);
+
+    const baseInput = {
+      db,
+      issueId,
+      agent: {
+        id: agentId,
+        name: "CodexCoder",
+        adapterType: "codex_local",
+      },
+    } as const;
+
+    const [first, second] = await Promise.all([
+      refreshIssueContinuationSummary({
+        ...baseInput,
+        run: {
+          id: firstRunId,
+          status: "succeeded",
+          error: null,
+          resultJson: { summary: "First refresh" },
+        },
+      }),
+      refreshIssueContinuationSummary({
+        ...baseInput,
+        run: {
+          id: secondRunId,
+          status: "succeeded",
+          error: null,
+          resultJson: { summary: "Second refresh" },
+        },
+      }),
+    ]);
+
+    const persisted = await getIssueContinuationSummaryDocument(db, issueId);
+    const documentRows = await db.select().from(documents);
+    const issueDocumentRows = await db.select().from(issueDocuments);
+    const revisionRows = await db.select().from(documentRevisions);
+
+    expect(first?.key).toBe("continuation-summary");
+    expect(second?.key).toBe("continuation-summary");
+    expect(persisted).toEqual(expect.objectContaining({
+      key: "continuation-summary",
+      latestRevisionNumber: 2,
+    }));
+    expect(documentRows).toHaveLength(1);
+    expect(issueDocumentRows).toHaveLength(1);
+    expect(revisionRows).toHaveLength(2);
   });
 });
