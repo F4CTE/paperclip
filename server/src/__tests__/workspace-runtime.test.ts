@@ -542,6 +542,8 @@ describe("realizeExecutionWorkspace", () => {
         },
       }),
     ).rejects.toThrow(/not a reusable git worktree \(path is not registered in `git worktree list`\)\./);
+
+    await expect(fs.stat(`${poisonedPath}-2`)).rejects.toThrow();
   });
 
   it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
