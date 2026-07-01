@@ -1851,9 +1851,13 @@ export function issueRoutes(
       projectId: string | null;
       parentId: string | null;
       status: string;
+      title?: string | null;
+      originKind?: string | null;
+      originId?: string | null;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    mutation?: Record<string, unknown>,
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1861,6 +1865,7 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+    if (await decideAgentGithubIssueBacklogPromotion(req, issue, mutation)) return true;
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
@@ -1921,6 +1926,72 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  function isPolyForgeGithubIssueTitle(title: string | null | undefined) {
+    return typeof title === "string" && /^\[PolyForge#\d+\]\s+\S/.test(title);
+  }
+
+  function isPolyForgeGithubIssueOriginId(originId: string | null | undefined) {
+    if (typeof originId !== "string") return false;
+    return /^(?:PolyForge#\d+|F4CTE\/PolyForge#\d+|polyforge-lab\/PolyForge#\d+|https:\/\/github\.com\/(?:F4CTE|polyforge-lab)\/PolyForge\/issues\/\d+)$/i
+      .test(originId);
+  }
+
+  function isAllowedPolyForgeGithubIssueRecord(issue: {
+    title?: string | null;
+    originKind?: string | null;
+    originId?: string | null;
+  }) {
+    if (!isPolyForgeGithubIssueTitle(issue.title)) return false;
+    if (issue.originKind === "manual" && issue.originId === null) return true;
+    return issue.originKind === "github_issue" && isPolyForgeGithubIssueOriginId(issue.originId);
+  }
+
+  function isStatusCommentOnlyBacklogPromotion(mutation: Record<string, unknown> | undefined) {
+    if (!mutation || typeof mutation !== "object" || Array.isArray(mutation)) return false;
+    const keys = Object.keys(mutation).filter((key) => mutation[key] !== undefined);
+    if (keys.length !== 2 || !keys.includes("status") || !keys.includes("comment")) return false;
+    return mutation.status === "todo" && typeof mutation.comment === "string" && mutation.comment.trim().length > 0;
+  }
+
+  function agentCanPromoteGithubIssueBacklog(agent: { role?: string | null; permissions?: unknown } | null) {
+    if (!agent) return false;
+    if (agent.role === "ceo") return true;
+    const permissions =
+      agent.permissions && typeof agent.permissions === "object" && !Array.isArray(agent.permissions)
+        ? agent.permissions as Record<string, unknown>
+        : {};
+    return permissions.canPromoteGithubIssueBacklog === true || permissions.githubIssueQueuePromotion === true;
+  }
+
+  function actorUsesNonStandardIssueMutationScope(actor: Request["actor"]) {
+    if (actor.type !== "agent") return false;
+    const scope = "keyScope" in actor
+      ? (actor as Request["actor"] & { keyScope?: { kind?: unknown } }).keyScope
+      : undefined;
+    return typeof scope?.kind === "string" && scope.kind !== "standard";
+  }
+
+  async function decideAgentGithubIssueBacklogPromotion(
+    req: Request,
+    issue: {
+      companyId: string;
+      status: string;
+      title?: string | null;
+      originKind?: string | null;
+      originId?: string | null;
+    },
+    mutation: Record<string, unknown> | undefined,
+  ) {
+    if (req.actor.type !== "agent" || req.actor.source !== "agent_key" || !req.actor.agentId) return false;
+    if (actorUsesNonStandardIssueMutationScope(req.actor)) return false;
+    if (req.actor.companyId !== issue.companyId || issue.status !== "backlog") return false;
+    if (!isStatusCommentOnlyBacklogPromotion(mutation)) return false;
+    if (!isAllowedPolyForgeGithubIssueRecord(issue)) return false;
+
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    return actorAgent?.companyId === issue.companyId && agentCanPromoteGithubIssueBacklog(actorAgent);
   }
 
   function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
@@ -4800,7 +4871,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, req.body))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
