@@ -1129,7 +1129,8 @@ export async function realizeExecutionWorkspace(input: {
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
-  const worktreePath = path.join(worktreeParentDir, branchName);
+  const preferredWorktreePath = path.join(worktreeParentDir, branchName);
+  let worktreePath = preferredWorktreePath;
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
@@ -1202,14 +1203,21 @@ export async function realizeExecutionWorkspace(input: {
     }).catch(() => null);
   }
 
+  async function nextAvailableWorktreePath(basePath: string) {
+    for (let suffix = 2; suffix < 1000; suffix += 1) {
+      const candidate = `${basePath}-${suffix}`;
+      if (!await directoryExists(candidate)) return candidate;
+    }
+    throw new Error(`Could not find an available worktree path for "${basePath}".`);
+  }
+
   const existingWorktree = await directoryExists(worktreePath);
   if (existingWorktree) {
     const validation = await validateReusableWorktree(worktreePath);
     if (validation?.valid) {
       return await reuseExistingWorktree(worktreePath);
     }
-    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+    worktreePath = await nextAvailableWorktreePath(preferredWorktreePath);
   }
 
   const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
