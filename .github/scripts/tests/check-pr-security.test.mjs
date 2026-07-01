@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  advisorySyncDeniedBy403,
   buildAdvisoryPayload,
+  buildSecurityCheckOutput,
   findExistingDraftAdvisory,
+  formatSecurityFlagForLog,
   postSecurityCheckRun,
   scanSecrets,
   scanCITampering,
@@ -200,6 +203,32 @@ test('syncDraftAdvisory: creates a new advisory when none exists', async () => {
   assert.deepEqual(JSON.parse(calls[1].options.body), buildAdvisoryPayload(6469, 'My PR', flags));
 });
 
+test('advisorySyncDeniedBy403: recognizes GitHub 403 advisory failures', () => {
+  assert.equal(advisorySyncDeniedBy403(Object.assign(new Error('Resource not accessible by integration'), { status: 403 })), true);
+  assert.equal(advisorySyncDeniedBy403(new Error('GitHub API POST /repos/example/repo/security-advisories → 403: Resource not accessible by integration')), true);
+  assert.equal(advisorySyncDeniedBy403(new Error('GitHub API POST /repos/example/repo/security-advisories → 500: boom')), false);
+});
+
+test('buildSecurityCheckOutput: reports manual follow-up when advisory creation is denied', () => {
+  assert.deepEqual(buildSecurityCheckOutput(true, { status: 'advisory-denied', statusCode: 403 }), {
+    title: 'Security Review Needs Manual Follow-up',
+    summary: 'Security flags were detected, but GitHub denied draft advisory creation with 403. Maintainers should review this workflow run security-gate log for the flagged paths; not a merge block.',
+  });
+});
+
+test('formatSecurityFlagForLog: omits raw secret-bearing diff lines', () => {
+  const line = '+const token = "sk-abcdefghijklmnopqrstuvwxyz123456"';
+  const formatted = formatSecurityFlagForLog({
+    check: 'secret-scan',
+    file: 'src/config.ts',
+    pattern: 'OpenAI API key',
+    line,
+  });
+
+  assert.equal(formatted, 'secret-scan file=src/config.ts pattern=OpenAI API key');
+  assert.doesNotMatch(formatted, /sk-abcdefghijklmnopqrstuvwxyz123456/);
+});
+
 test('postSecurityCheckRun: uses the injected fetch implementation', async () => {
   const calls = [];
 
@@ -221,6 +250,22 @@ test('postSecurityCheckRun: uses the injected fetch implementation', async () =>
       summary: 'Draft advisory filed for maintainer review. Not a merge block — review the advisory at your leisure.',
     },
   });
+});
+
+test('postSecurityCheckRun: does not claim a draft advisory was filed after 403 denial', async () => {
+  const calls = [];
+
+  await postSecurityCheckRun(async (path, token, options) => {
+    calls.push({ path, token, options });
+    return { ok: true };
+  }, 'token', 'paperclipai/paperclip', 'deadbeef', true, { status: 'advisory-denied', statusCode: 403 });
+
+  assert.equal(calls.length, 1);
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(body.conclusion, 'neutral');
+  assert.equal(body.output.title, 'Security Review Needs Manual Follow-up');
+  assert.match(body.output.summary, /GitHub denied draft advisory creation with 403/);
+  assert.doesNotMatch(body.output.summary, /Draft advisory filed/);
 });
 
 test('validateSensitivePaths: checks paths against the resolved base ref instead of master', async () => {

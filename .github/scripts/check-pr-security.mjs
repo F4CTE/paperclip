@@ -215,6 +215,14 @@ export function buildAdvisoryPayload(prNumber, prTitle, flags) {
   };
 }
 
+export function formatSecurityFlagForLog(flag) {
+  const parts = [flag.check];
+  if (flag.file) parts.push(`file=${flag.file}`);
+  if (flag.pattern) parts.push(`pattern=${flag.pattern}`);
+  if (flag.packages?.length) parts.push(`packages=${flag.packages.join(',')}`);
+  return parts.join(' ');
+}
+
 export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitle, flags) {
   const existing = await findExistingDraftAdvisory(fetchImpl, token, repo, prNumber);
   const payload = buildAdvisoryPayload(prNumber, prTitle, flags);
@@ -229,18 +237,20 @@ export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitl
     // The field is only valid on POST when creating the draft; updates must omit it.
     const { vulnerabilities, ...patchPayload } = payload;
 
-    return fetchImpl(`/repos/${repo}/security-advisories/${advisoryId}`, token, {
+    await fetchImpl(`/repos/${repo}/security-advisories/${advisoryId}`, token, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patchPayload),
     });
+    return { status: 'synced', action: 'updated', advisoryId };
   }
 
-  return fetchImpl(`/repos/${repo}/security-advisories`, token, {
+  await fetchImpl(`/repos/${repo}/security-advisories`, token, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  return { status: 'synced', action: 'created' };
 }
 
 // Cap pagination so a large backlog of unrelated draft advisories cannot stall
@@ -273,7 +283,35 @@ export async function findExistingDraftAdvisory(fetchImpl, token, repo, prNumber
   return null;
 }
 
-export async function postSecurityCheckRun(fetchImpl, token, repo, headSha, hasFlags) {
+export function advisorySyncDeniedBy403(error) {
+  if (!error) return false;
+  if (error.status === 403 || error.code === 403) return true;
+  return /\b403\b/.test(String(error.message ?? error));
+}
+
+export function buildSecurityCheckOutput(hasFlags, advisorySyncResult = { status: 'synced' }) {
+  if (!hasFlags) {
+    return {
+      title: 'Security Review Passed',
+      summary: 'No security concerns detected.',
+    };
+  }
+
+  if (advisorySyncResult?.status === 'advisory-denied') {
+    return {
+      title: 'Security Review Needs Manual Follow-up',
+      summary: 'Security flags were detected, but GitHub denied draft advisory creation with 403. Maintainers should review this workflow run security-gate log for the flagged paths; not a merge block.',
+    };
+  }
+
+  return {
+    title: 'Security Review Recommended',
+    summary: 'Draft advisory filed for maintainer review. Not a merge block — review the advisory at your leisure.',
+  };
+}
+
+export async function postSecurityCheckRun(fetchImpl, token, repo, headSha, hasFlags, advisorySyncResult) {
+  const output = buildSecurityCheckOutput(hasFlags, advisorySyncResult);
   await fetchImpl(`/repos/${repo}/check-runs`, token, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -287,19 +325,13 @@ export async function postSecurityCheckRun(fetchImpl, token, repo, headSha, hasF
       // same head SHA, so it would hang forever.
       status: 'completed',
       conclusion: 'neutral',
-      output: {
-        title: 'Security Review Recommended',
-        summary: 'Draft advisory filed for maintainer review. Not a merge block — review the advisory at your leisure.',
-      },
+      output,
     } : {
       name: 'security-review',
       head_sha: headSha,
       status: 'completed',
       conclusion: 'success',
-      output: {
-        title: 'Security Review Passed',
-        summary: 'No security concerns detected.',
-      },
+      output,
     }),
   });
 }
@@ -373,11 +405,19 @@ async function main() {
   ];
 
   if (allFlags.length > 0) {
-    console.error(`[security] ${allFlags.length} flag(s) detected — creating draft advisory and pending check run`);
-    await Promise.all([
-      syncDraftAdvisory(ghFetch, GH_TOKEN, GH_REPO, prNumber, pr.title, allFlags),
-      postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, true),
-    ]);
+    console.error(`[security] ${allFlags.length} flag(s) detected — creating draft advisory and neutral check run`);
+    for (const flag of allFlags) {
+      console.error(`[security] flag: ${formatSecurityFlagForLog(flag)}`);
+    }
+    let advisorySyncResult = { status: 'synced' };
+    try {
+      advisorySyncResult = await syncDraftAdvisory(ghFetch, GH_TOKEN, GH_REPO, prNumber, pr.title, allFlags);
+    } catch (error) {
+      if (!advisorySyncDeniedBy403(error)) throw error;
+      console.warn('[security] draft advisory creation denied with 403; recording manual-review signal instead');
+      advisorySyncResult = { status: 'advisory-denied', statusCode: 403 };
+    }
+    await postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, true, advisorySyncResult);
   } else {
     console.log('[security] all clear');
     await postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, false);
