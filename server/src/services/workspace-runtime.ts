@@ -1217,10 +1217,6 @@ export async function realizeExecutionWorkspace(input: {
     if (validation?.valid) {
       return await reuseExistingWorktree(worktreePath);
     }
-    if (!validation || validation.reason === "path is not registered in `git worktree list`") {
-      const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-      throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
-    }
     worktreePath = await nextAvailableWorktreePath(preferredWorktreePath);
   }
 

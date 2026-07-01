@@ -1326,11 +1326,6 @@ describe("realizeExecutionWorkspace", () => {
       await fs.mkdir(baseRoot, { recursive: true });
       await fs.mkdir(worktreeRoot, { recursive: true });
       await fs.mkdir(fakeBin, { recursive: true });
-      await fs.writeFile(
-        path.join(baseRoot, "package.json"),
-        JSON.stringify({ scripts: { paperclipai: "paperclipai" } }, null, 2),
-        "utf8",
-      );
       await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
       await fs.chmod(scriptPath, 0o755);
       await fs.writeFile(
@@ -2410,7 +2405,7 @@ describe("ensureRuntimeServicesForRun", () => {
 
     const executionResponse = await fetch(executionServices[0]!.url!);
     expect(await executionResponse.text()).toBe(path.join(worktreeWorkspaceRoot, ".paperclip", "runtime-services"));
-  }, 20_000);
+  });
 
   it("does not leak parent Paperclip instance env into runtime service commands", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-env-"));
@@ -2544,7 +2539,7 @@ describe("ensureRuntimeServicesForRun", () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
 
     await expect(fetch(services[0]!.url!)).rejects.toThrow();
-  }, 20_000);
+  });
 
   it("does not stop services in sibling directories when matching by workspace cwd", async () => {
     const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-sibling-"));
@@ -2664,7 +2659,7 @@ describe("ensureRuntimeServicesForRun", () => {
       executionWorkspaceId: "execution-workspace-control-start",
       workspaceCwd: workspace.cwd,
     });
-  }, 20_000);
+  });
 
   it("stops only the selected execution workspace runtime service", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-stop-"));
@@ -2740,7 +2735,7 @@ describe("ensureRuntimeServicesForRun", () => {
       workspaceCwd: workspace.cwd,
       runtimeServiceId: worker?.id ?? null,
     });
-  }, 20_000);
+  }, 10_000);
 });
 
 describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
@@ -3092,7 +3087,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
-  }, 20_000);
+  });
 
   it("does not reuse a stopped auto-port service port while another process owns it", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-unhealthy-adopt-"));
@@ -3521,7 +3516,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     expect(persisted?.status).toBe("stopped");
     expect(persisted?.healthStatus).toBe("unknown");
     expect(persisted?.stoppedAt).toBeTruthy();
-  }, 20_000);
+  });
 
   it("restarts a stopped auto-port service on the same port when it is available", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-port-reuse-"));
@@ -3645,7 +3640,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       executionWorkspaceId,
       workspaceCwd: workspace.cwd,
     });
-  }, 20_000);
+  });
 });
 
 describe("normalizeAdapterManagedRuntimeServices", () => {

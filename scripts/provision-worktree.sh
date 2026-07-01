@@ -43,10 +43,18 @@ run_isolated_worktree_init() {
     return 0
   fi
 
-  if base_declares_paperclipai_script && command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
     (
       cd "$worktree_cwd"
       pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    )
+    return 0
+  fi
+
+  if command -v paperclipai >/dev/null 2>&1; then
+    (
+      cd "$worktree_cwd"
+      paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
     return 0
   fi
@@ -55,7 +63,7 @@ run_isolated_worktree_init() {
 }
 
 paperclipai_command_available() {
-  if command -v pnpm >/dev/null 2>&1 && base_declares_paperclipai_script && pnpm paperclipai --help >/dev/null 2>&1; then
+  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
     return 0
   fi
 
@@ -65,23 +73,11 @@ paperclipai_command_available() {
     return 0
   fi
 
+  if command -v paperclipai >/dev/null 2>&1; then
+    return 0
+  fi
+
   return 1
-}
-
-base_declares_paperclipai_script() {
-  local package_json_path="$base_cwd/package.json"
-  [[ -f "$package_json_path" ]] || return 1
-  node - "$package_json_path" <<'EOF'
-const fs = require("node:fs");
-
-try {
-  const packageJson = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-  const scripts = packageJson && typeof packageJson === "object" ? packageJson.scripts : null;
-  process.exit(scripts && typeof scripts === "object" && typeof scripts.paperclipai === "string" ? 0 : 1);
-} catch {
-  process.exit(1);
-}
-EOF
 }
 
 write_fallback_worktree_config() {
@@ -341,10 +337,6 @@ if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
 else
   if paperclipai_command_available; then
     run_isolated_worktree_init
-    if [[ ! -e "$worktree_config_path" || ! -e "$worktree_env_path" ]]; then
-      echo "paperclipai worktree init did not create isolated config; writing fallback config without DB seeding." >&2
-      write_fallback_worktree_config
-    fi
   else
     echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
     write_fallback_worktree_config
@@ -419,7 +411,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
       if (
         cd "$worktree_cwd"
-        CI=true pnpm install "$@"
+        pnpm install "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"
         cat "$stderr_path" >&2
